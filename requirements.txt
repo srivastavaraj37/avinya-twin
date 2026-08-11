@@ -1,0 +1,19 @@
+# Streamlit Community Cloud deployment requirements.
+#
+# Streamlit Cloud does not read pyproject.toml's [project.optional-dependencies]
+# extras -- it installs from a top-level requirements.txt only. This lists the
+# dashboard's direct imports (streamlit, plotly, pandas, numpy, pyarrow for
+# reading results/precomputed/*.parquet, requests because data/fetch_weather.py
+# imports it at module level even though the deployed app never calls its
+# network-fetching function), pinned to the versions installed in this
+# project's venv. Transitive dependencies are left to pip's resolver rather
+# than pinned here, since this project's venv is Windows and Streamlit Cloud's
+# container is Linux -- platform-specific transitive pins would not transfer
+# correctly, but these six packages are pure-enough that the same version
+# resolves cleanly on both.
+streamlit==1.61.1
+plotly==6.9.0
+pandas==2.3.3
+numpy==2.2.6
+pyarrow==24.0.0
+requests==2.34.2

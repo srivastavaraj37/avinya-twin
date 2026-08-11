@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Local virtualenv -- never commit (469MB, and Streamlit Cloud builds its own
+# from requirements.txt). This is the one entry most likely to be missing on
+# a fresh clone-and-init; verified with `git check-ignore` before deployment.
+venv/
+.venv/
+
+# Streamlit local runtime state, if ever generated locally.
+.streamlit/secrets.toml
+
+# Local Claude Code session/tool state -- personal, not project config.
+.claude/

@@ -1,0 +1,3 @@
+vpd_weight,leaf_wet_weight,w_switch,fan_energy_weight,water_L_per_m2,leaf_wet_hours,vent_actuations,fan_actuations,fan_kWh,cumulative_dsv,alternaria_risk,pct_vpd_band,total_actuations,pareto
+0.5,0.04,0.15,0.0,0.0,769,275,13,528.0,1.0,0,14.027777777777779,288,True
+0.5,0.04,0.15,0.02,0.0,1227,183,16,12.0,10.0,10,14.120370370370368,199,True

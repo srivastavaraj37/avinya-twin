@@ -1,0 +1,76 @@
+# ---------------------------------------------------------------------------
+# avinya-twin configuration
+# All tunable physical / model parameters live here. Simulation code must
+# read values from this file (via sim.config.load_config) rather than
+# hardcoding numbers.
+# ---------------------------------------------------------------------------
+
+location:
+  latitude: 26.19          # degrees N, Guwahati, Assam
+  longitude: 91.69         # degrees E
+  elevation_m: 55.0        # m above sea level (approx, Guwahati)
+  timezone: Asia/Kolkata
+
+weather:
+  start_date: "2025-03-01"
+  end_date: "2025-08-31"
+
+polyhouse:
+  area_floor_m2: 100.0        # m2, floor area of the polyhouse
+  area_cover_m2: 203.0         # m2, total enclosing surface (curved roof + 2 end walls) exposed to
+                                # outside air. Polyhouses of this scale are typically Quonset/tunnel
+                                # shaped (semicircular arch), not box-walled. Derived self-consistently
+                                # with height_m=3.0 as the *mean* internal height: for a semicircular
+                                # arch of radius r, mean height = (pi/4)*r, so r = height_m*4/pi = 3.82 m,
+                                # span W = 2r = 7.64 m, length L = area_floor_m2 / W = 13.09 m.
+                                # Curved-roof area = pi*r*L = 157.1 m2; two semicircular end walls =
+                                # pi*r^2 = 45.8 m2; total = 202.9 m2 (~203).
+  height_m: 3.0                # m, mean internal air volume height
+  cover_tau: 0.65               # dimensionless, PE film shortwave transmissivity
+  cover_U_Wm2K: 6.0             # W/m2/K, single-layer PE film overall heat-transfer coeff (ASHRAE range 5-7)
+  C_eff_JK_per_m2: 30000.0      # J/K per m2 floor, effective thermal mass (air+crop+soil+structure)
+  albedo: 0.23                  # dimensionless, FAO-56 reference crop albedo
+
+ventilation:
+  ach_min: 0.5           # 1/hr, minimum infiltration air-change rate (vents closed)
+  ach_max_base: 30.0     # 1/hr, air-change rate at vent_frac=1.0, zero wind
+  wind_coeff: 0.15        # dimensionless, fractional ACH boost per m/s outdoor wind
+
+fan:
+  # Horizontal-airflow (HAF) circulation fan. Does not exchange air with
+  # outside; thins the leaf boundary layer instead (see sim/polyhouse.py
+  # module docstring for the mechanism and CLAUDE.md for the sensitivity of
+  # the headline result to rh_wet_threshold_max, which is a modelling
+  # assumption, not a measured value).
+  power_w: 250.0               # W, two 125W HAF fans, typical spec for a 100 m2 house (source: commercial HAF fan datasheets, e.g. 18-20in 1/4-1/3 HP circulation fans widely sold for polyhouse/greenhouse use)
+  rh_wet_threshold_min: 90.0   # %, leaf-wetness RH_in threshold at fan_frac=0 (matches the fixed 90% used everywhere else in this project)
+  rh_wet_threshold_max: 96.0   # %, leaf-wetness RH_in threshold at fan_frac=1 -- ASSUMPTION, not measured; see CLAUDE.md
+
+transpiration:
+  lai: 3.0                     # m2 leaf / m2 floor, typical mature tomato canopy
+  coeff_radiation: 0.4         # dimensionless, Stanghellini-type radiation-driven transpiration coefficient
+  coeff_vpd: 2.0e-5            # kg/s/m2/kPa per unit LAI, Stanghellini-type VPD-driven transpiration coefficient
+
+soil:
+  fc: 0.30    # m3/m3, field capacity (FAO-56 typical loam)
+  wp: 0.13    # m3/m3, wilting point (FAO-56 typical loam)
+  zr_m: 0.4   # m, effective tomato root depth (FAO-56 Table 22: 0.7-1.5 m mature; 0.4 m used for a young/managed crop)
+  p: 0.40     # dimensionless, FAO-56 Table 22 depletion fraction for tomato
+
+crop:
+  # FAO-56 Table 12 tomato crop coefficients (Kc) and Table 11-style stage lengths
+  kc_initial: 0.6
+  kc_development: 0.9
+  kc_mid: 1.15
+  kc_late: 0.80
+  day_initial_end: 29        # last day (0-indexed) of the initial stage
+  day_development_end: 69    # last day of the development stage
+  day_mid_end: 119           # last day of the mid-season stage
+
+disease:
+  spray_threshold_dsv: 18    # cumulative Wallin DSV, BLITECAST action threshold
+
+simulation:
+  dt_seconds: 300              # s, explicit-Euler sub-step (5 min)
+  substeps_per_hour: 12        # 3600 / dt_seconds
+  stability_warn_frac: 0.20    # dimensionless, CFL-style relative-change warning threshold

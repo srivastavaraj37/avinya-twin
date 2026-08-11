@@ -1,0 +1,16 @@
+regime,year,controller,water_L_per_m2,leaf_wet_hours,alternaria_risk,wallin_dsv,pct_hours_achievable_vpd_band,vent_actuations,fan_kWh,elapsed_s
+Regime A (Monsoon),2024,fixed,720.0,1513,39,27.0,11.62037037037037,180,0.0,6.4
+Regime A (Monsoon),2024,threshold,0.0,1077,2,6.0,7.731481481481481,199,328.0,6.1
+Regime A (Monsoon),2024,mpc,0.0,793,1,3.0,1.1574074074074074,257,514.0,227.1
+Regime A (Monsoon),2025,fixed,720.0,1388,17,10.0,13.657407407407407,180,0.0,6.2
+Regime A (Monsoon),2025,threshold,0.0,990,0,2.0,8.564814814814815,223,304.0,6.0
+Regime A (Monsoon),2025,mpc,0.0,791,0,1.0,3.7962962962962963,341,480.75,228.0
+Regime A (Monsoon),2023,fixed,720.0,1483,35,29.0,10.925925925925926,180,0.0,6.2
+Regime A (Monsoon),2023,threshold,0.0,1099,0,7.0,7.361111111111112,195,327.5,6.1
+Regime A (Monsoon),2023,mpc,0.0,856,0,2.0,1.4814814814814816,330,506.5,228.5
+Regime A (Monsoon),2021,fixed,720.0,1482,34,14.0,10.787037037037036,180,0.0,6.2
+Regime A (Monsoon),2021,threshold,0.0,1057,3,3.0,7.12962962962963,193,321.0,6.1
+Regime A (Monsoon),2021,mpc,0.0,780,1,2.0,1.1574074074074074,259,528.25,230.3
+Regime A (Monsoon),2022,fixed,720.0,1399,18,37.0,14.583333333333334,180,0.0,6.4
+Regime A (Monsoon),2022,threshold,0.0,965,1,4.0,9.583333333333334,187,301.25,6.1
+Regime A (Monsoon),2022,mpc,0.0,709,0,2.0,1.5277777777777777,310,504.75,230.3

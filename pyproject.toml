@@ -1,0 +1,25 @@
+[project]
+name = "avinya-twin"
+version = "0.1.0"
+description = "Physics-based digital twin of a plastic polyhouse (tomato, Guwahati, Assam) for humidity/disease-pressure controller research."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "requests",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+dashboard = ["streamlit", "plotly"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sim*"]

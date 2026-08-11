@@ -1,0 +1,24 @@
+# Streamlit Community Cloud reads this at container start. Theme colors match
+# dashboard/app.py's dataviz reference palette (see its module-level color
+# constants) so the app chrome (buttons, sliders, links) doesn't clash with
+# the Plotly charts' own palette.
+
+[theme]
+base = "dark"
+primaryColor = "#3987e5"            # BLUE (dark-mode step) -- matches the dashboard's indoor/interactive series color
+backgroundColor = "#1a1a19"         # SURFACE (dark chart surface)
+secondaryBackgroundColor = "#2c2c2a"
+textColor = "#ffffff"               # TEXT_PRIMARY (dark)
+font = "sans serif"
+
+[server]
+headless = true
+runOnSave = false
+enableStaticServing = false
+maxUploadSize = 1
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "viewer"

@@ -1,0 +1,4 @@
+controller,water_L_per_m2,pct_hours_vpd_band,cumulative_dsv,leaf_wet_hours,vent_actuations
+fixed,720.0,13.7,10.0,1388,180
+threshold,0.0,13.29,10.0,1333,223
+mpc,0.0,13.8,11.0,1292,330

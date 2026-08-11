@@ -1,0 +1,16 @@
+regime,year,controller,water_L_per_m2,leaf_wet_hours,alternaria_risk,wallin_dsv,pct_hours_achievable_vpd_band,vent_actuations,fan_kWh,elapsed_s
+Regime B (Dry season),2021,fixed,720.0,1283,0,10.0,11.898148148148149,180,0.0,6.3
+Regime B (Dry season),2021,threshold,120.0,1052,0,0.0,2.685185185185185,671,300.5,5.9
+Regime B (Dry season),2021,mpc,120.0,460,0,0.0,1.5277777777777777,140,534.75,226.9
+Regime B (Dry season),2025,fixed,720.0,1351,0,40.0,12.962962962962962,180,0.0,6.5
+Regime B (Dry season),2025,threshold,120.0,1172,0,1.0,3.148148148148148,562,329.25,6.0
+Regime B (Dry season),2025,mpc,120.0,675,0,0.0,1.3888888888888888,195,538.75,228.9
+Regime B (Dry season),2024,fixed,720.0,1352,0,40.0,11.851851851851853,180,0.0,6.3
+Regime B (Dry season),2024,threshold,115.0,1149,0,0.0,4.027777777777778,529,338.0,6.1
+Regime B (Dry season),2024,mpc,115.0,667,0,0.0,2.4537037037037037,115,531.75,229.6
+Regime B (Dry season),2023,fixed,720.0,1362,0,41.0,10.648148148148149,180,0.0,6.3
+Regime B (Dry season),2023,threshold,110.0,1093,0,1.0,2.638888888888889,567,327.5,6.0
+Regime B (Dry season),2023,mpc,110.0,612,0,0.0,1.7592592592592593,120,535.5,230.7
+Regime B (Dry season),2022,fixed,720.0,1341,0,27.0,13.61111111111111,180,0.0,6.3
+Regime B (Dry season),2022,threshold,140.0,1087,0,0.0,3.3333333333333335,599,322.25,6.0
+Regime B (Dry season),2022,mpc,140.0,564,0,0.0,0.9259259259259258,90,537.75,232.2
