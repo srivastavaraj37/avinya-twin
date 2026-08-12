@@ -5,15 +5,29 @@
 # dashboard's direct imports (streamlit, plotly, pandas, numpy, pyarrow for
 # reading results/precomputed/*.parquet, requests because data/fetch_weather.py
 # imports it at module level even though the deployed app never calls its
-# network-fetching function), pinned to the versions installed in this
-# project's venv. Transitive dependencies are left to pip's resolver rather
-# than pinned here, since this project's venv is Windows and Streamlit Cloud's
-# container is Linux -- platform-specific transitive pins would not transfer
-# correctly, but these six packages are pure-enough that the same version
-# resolves cleanly on both.
-streamlit==1.61.1
-plotly==6.9.0
-pandas==2.3.3
-numpy==2.2.6
-pyarrow==24.0.0
-requests==2.34.2
+# network-fetching function).
+#
+# Lower-bound (>=) pins, not exact (==). Originally this pinned exact versions
+# matching the local dev venv, but Community Cloud's Python version is fixed
+# per-app at deploy time via the "Advanced settings" dialog, NOT by
+# runtime.txt -- that file is currently ignored platform-wide (open bug:
+# https://github.com/streamlit/streamlit/issues/15326), so an app can land on
+# any Python version Cloud currently defaults to. Compiled packages (pyarrow
+# especially) may not ship a wheel for a brand-new interpreter version at an
+# old exact pin, which silently breaks the whole install. Lower bounds let the
+# resolver pick whatever compatible build actually exists for the interpreter
+# the app ends up running on, instead of that being a landmine.
+#
+# If a fresh deploy ever fails again with a dependency error despite this file
+# looking correct: it is very unlikely to be this file. Check the build log
+# for which Python version was actually used (look for "Using Python ..."),
+# and if it's newer than expected, the fix is deleting and redeploying the
+# app with the Python version pinned explicitly in Advanced settings --
+# rebooting an existing app cannot change its already-provisioned Python
+# version.
+streamlit>=1.61.1
+plotly>=6.9.0
+pandas>=2.3.3
+numpy>=2.2.6
+pyarrow>=24.0.0
+requests>=2.34.2
