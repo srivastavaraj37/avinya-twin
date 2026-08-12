@@ -55,12 +55,14 @@ OUT_DIR = REPO_ROOT / "results" / "precomputed"
 # Exactly the columns dashboard/app.py reads (see build_live_figure,
 # compute_metrics, summarize_controller, find_failure_events, svg_polyhouse) --
 # every other engine.run() output column (ETc_hr, ET_hr, depletion, condensed,
-# alternaria_risk, runoff) is dropped. T_out isn't an engine output; it's the
-# matching weather row, joined in here the same way dashboard/app.py's old
-# run_window() did.
+# runoff) is dropped. T_out isn't an engine output; it's the matching weather
+# row, joined in here the same way dashboard/app.py's old run_window() did.
+# alternaria_risk added so the Controller Comparison page can show it
+# per-(regime,year) without a separate data source -- it's the
+# climate-appropriate disease metric (see CLAUDE.md's Gate 6b finding).
 KEEP_COLUMNS = [
     "T_in", "T_out", "RH_in", "VPD", "vent", "fan",
-    "irrigation", "rain", "leaf_wet", "dsv_cumulative", "fan_kWh", "soil_pct",
+    "irrigation", "rain", "leaf_wet", "dsv_cumulative", "alternaria_risk", "fan_kWh", "soil_pct",
 ]
 
 MAX_WORKERS = 10

@@ -1,0 +1,62 @@
+{
+  "window_start": "2025-06-22",
+  "window_end": "2025-06-29",
+  "gates": [
+    {
+      "name": "V1",
+      "description": "Daytime (11-15h) mean T_in - T_out",
+      "measured": "4.51 degC",
+      "bounds": "[4.0, 16.0] degC",
+      "passed": true
+    },
+    {
+      "name": "V2",
+      "description": "Pre-dawn (03-06h) mean RH_in",
+      "measured": "97.93 %",
+      "bounds": "> 92 %",
+      "passed": true
+    },
+    {
+      "name": "V3",
+      "description": "Peak hourly ET",
+      "measured": "0.610 mm/hr",
+      "bounds": "[0.25, 0.70] mm/hr",
+      "passed": true
+    },
+    {
+      "name": "V4",
+      "description": "Daily total ET (min..max over the week)",
+      "measured": "3.05..4.47 mm/day",
+      "bounds": "[2.5, 6.0] mm/day",
+      "passed": true
+    },
+    {
+      "name": "V5",
+      "description": "T_in physical plausibility band",
+      "measured": "[25.07, 40.52] degC",
+      "bounds": "within [5, 55] degC",
+      "passed": true
+    },
+    {
+      "name": "V6",
+      "description": "Fraction of night hours leaf_wet",
+      "measured": "1.00",
+      "bounds": "> 0.5",
+      "passed": true
+    },
+    {
+      "name": "V7",
+      "description": "Monotonic cooling/drying vs vent_frac [0.0, 0.25, 0.5, 0.75, 1.0]",
+      "measured": "T_in=[49.9, 36.7, 34.4, 33.5, 33.0], RH_in=[100.0, 87.6, 83.1, 80.9, 79.6]",
+      "bounds": "both strictly decreasing",
+      "passed": true
+    },
+    {
+      "name": "V8",
+      "description": "No-solar steady-state convergence to T_out",
+      "measured": "|T_in-T_out| = 0.332 degC",
+      "bounds": "< 0.5 degC",
+      "passed": true
+    }
+  ]
+}

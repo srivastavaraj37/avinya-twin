@@ -11,8 +11,9 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -29,6 +30,7 @@ from sim.polyhouse import Polyhouse  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEATHER_CSV = REPO_ROOT / "data" / "guwahati_2025.csv"
 FIGURES_DIR = REPO_ROOT / "figures"
+RESULTS_DIR = REPO_ROOT / "results"
 VALIDATION_START = "2025-06-22"
 VALIDATION_END = "2025-06-29"  # exclusive
 
@@ -184,6 +186,23 @@ def evaluate_gates(passive_res: pd.DataFrame, week: pd.DataFrame) -> list[GateRe
     return gates
 
 
+def write_gate_results_json(gates: list[GateResult]) -> Path:
+    """Serialize the gate table to results/gate_results.json for the
+    dashboard's Validation & Limitations page to read -- so that page shows
+    the real gate table this script actually produced, not numbers typed
+    into dashboard/app.py by hand and left to drift out of sync.
+    """
+    payload = {
+        "window_start": VALIDATION_START,
+        "window_end": VALIDATION_END,
+        "gates": [{**asdict(g), "passed": bool(g.passed)} for g in gates],
+    }
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = RESULTS_DIR / "gate_results.json"
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return out_path
+
+
 def print_gate_table(gates: list[GateResult]) -> None:
     name_w = max(len(g.name) for g in gates)
     desc_w = max(len(g.description) for g in gates)
@@ -268,6 +287,9 @@ def main() -> int:
     plot_et_profile(passive_res)
     print(f"\nWrote {FIGURES_DIR / 'validation.png'}")
     print(f"Wrote {FIGURES_DIR / 'et_profile.png'}")
+
+    json_path = write_gate_results_json(gates)
+    print(f"Wrote {json_path}")
 
     n_fail = sum(1 for g in gates if not g.passed)
     if n_fail:

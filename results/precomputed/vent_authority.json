@@ -1,0 +1,21 @@
+{
+  "window_start": "2025-06-01",
+  "window_end": "2025-08-30",
+  "n_hours": 2160,
+  "narrow_range_threshold_kpa": 0.2,
+  "jja_rh_out_mean_pct": 85.89861111111111,
+  "mean_achievable_range_kpa": 0.4673800328441353,
+  "median_achievable_range_kpa": 0.26146869022114827,
+  "frac_narrow_all": 0.44074074074074077,
+  "frac_narrow_day": 0.05462962962962963,
+  "frac_narrow_night": 0.8268518518518518,
+  "percentiles_kpa": {
+    "p10": 0.04763621450907653,
+    "p25": 0.086637111463214,
+    "p50": 0.26146869022114827,
+    "p75": 0.7767671678070303,
+    "p90": 1.1997834738086295
+  },
+  "envelope_week_start": "2025-06-22",
+  "envelope_week_end": "2025-06-29"
+}
