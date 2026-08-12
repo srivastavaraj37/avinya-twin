@@ -1,12 +1,34 @@
 """Interactive Streamlit dashboard for the avinya-twin polyhouse simulator.
 
-Three pages, selected from the sidebar:
-    Live Simulation        -- inspect one controller over a regime/year
-                               window, hour by hour.
-    Controller Comparison  -- fixed vs threshold vs predictive (MPC) over a
-                               chosen regime and year.
-    Live Twin              -- an animated cross-section that scrubs through
-                               a run hour by hour.
+Eight pages, selected from the sidebar, in narrative order:
+    Headline Results          -- default landing page. 5-year mean +/- sd
+                                  across both climate regimes, plain-language
+                                  first.
+    Why Ventilation Alone Fails -- the day/night vent-authority finding that
+                                  motivated the circulation fan.
+    Controller Comparison     -- fixed vs threshold vs predictive (MPC) over
+                                  a chosen regime and year.
+    Live Simulation           -- inspect one controller over a regime/year
+                                  window, hour by hour.
+    Live Twin                 -- an animated cross-section that scrubs
+                                  through a run hour by hour.
+    Validation & Limitations  -- V1-V8 gate table + every honest limitation,
+                                  kept fully technical (this page is for a
+                                  technical reviewer, not simplified).
+    Deployment & Cost         -- hardware BOM, architecture properties, and
+                                  an N-unit scale-up projection.
+    For Growers               -- plain-language, no jargon/equations/metric
+                                  abbreviations. Placed LAST deliberately: it
+                                  demonstrates end-user thinking, it is not
+                                  the headline.
+
+AUDIENCE: competition judges (Innovation 30% / Feasibility 25% / Scalability
+25% / Sustainability 20%), not farmers -- the farmer is the beneficiary, not
+the reader. So every page except Validation & Limitations and For Growers
+follows one convention: a plain-language label is the primary text a judge
+reads in <10s, and the precise technical term is demoted to a caption or a
+column-header tooltip, never deleted -- it still carries the Innovation and
+Feasibility marks. See METRIC_SPECS/HEADLINE_CARD_TEXT for the label pairs.
 
 **Precomputed by default.** The Predictive (MPC) controller takes 2-4
 minutes per 90-day window (a joint vent+fan candidate search re-simulated
@@ -112,19 +134,61 @@ CROP_STAGE_VPD_BAND = {
 # actuations, less energy) -- there is no metric here where a controller
 # wants a *higher* number, which is why every delta below uses a single
 # "inverse" color convention (negative change = green = improvement).
+#
+# Communication layer, not physics: "plain" is the primary label shown to a
+# judge (plain-language, <=10s to parse); "technical" is the precise term,
+# demoted to a caption/tooltip but never deleted -- a judge scoring
+# Innovation/Feasibility still needs it visible. See the audience note at
+# the top of this module.
 METRIC_SPECS: list[dict[str, str]] = [
-    {"key": "water_L_per_m2", "label": "Water", "unit": "L/m²", "fmt": "{:.1f}"},
-    {"key": "leaf_wet_hours", "label": "Leaf-wet hours", "unit": "h", "fmt": "{:.0f}"},
-    {"key": "alternaria_risk", "label": "Alternaria risk", "unit": "units", "fmt": "{:.1f}"},
-    {"key": "wallin_dsv", "label": "Wallin DSV", "unit": "", "fmt": "{:.1f}"},
-    {"key": "pct_hours_achievable_vpd_band", "label": "% hours achievable VPD band", "unit": "%", "fmt": "{:.2f}"},
-    {"key": "vent_actuations", "label": "Vent actuations", "unit": "", "fmt": "{:.0f}"},
-    {"key": "fan_kWh", "label": "Fan energy", "unit": "kWh", "fmt": "{:.1f}"},
+    {"key": "water_L_per_m2", "plain": "Water used", "technical": "L/m² applied over the season", "unit": "L/m²", "fmt": "{:.1f}"},
+    {"key": "leaf_wet_hours", "plain": "Hours with wet leaves", "technical": "leaf-wet hours", "unit": "h", "fmt": "{:.0f}"},
+    {"key": "alternaria_risk", "plain": "Early blight risk", "technical": "Alternaria solani risk units", "unit": "units", "fmt": "{:.1f}"},
+    {"key": "wallin_dsv", "plain": "Late blight risk (temperate model)", "technical": "Wallin DSV", "unit": "", "fmt": "{:.1f}"},
+    {
+        "key": "pct_hours_achievable_vpd_band", "plain": "% hours in ideal humidity range",
+        "technical": "% hours in achievable VPD band", "unit": "%", "fmt": "{:.2f}",
+    },
+    {"key": "vent_actuations", "plain": "Vent movements", "technical": "vent actuations", "unit": "", "fmt": "{:.0f}"},
+    {"key": "fan_kWh", "plain": "Fan electricity", "technical": "fan energy, kWh", "unit": "kWh", "fmt": "{:.1f}"},
 ]
 METRIC_SPEC_BY_KEY = {m["key"]: m for m in METRIC_SPECS}
 
 # Order matches the ask: Alternaria risk, leaf-wet hours, water L/m2.
 HEADLINE_METRIC_KEYS = ["alternaria_risk", "leaf_wet_hours", "water_L_per_m2"]
+
+# Headline-card-specific wording: punchier standalone labels than the table
+# versions above (a card doesn't sit next to "Late blight risk" needing
+# disambiguation the way a table column does), plus a one-line plain-English
+# "what this means" explanation per card.
+HEADLINE_CARD_TEXT: dict[str, dict[str, str]] = {
+    "alternaria_risk": {
+        "card_label": "Disease risk",
+        "technical": "Alternaria solani risk units",
+        "meaning": "How much fungal disease pressure built up over the season. Lower is better.",
+    },
+    "leaf_wet_hours": {
+        "card_label": "Hours with wet leaves",
+        "technical": "leaf-wet hours -- when fungus infects",
+        "meaning": "Hours the leaves stayed wet enough for fungus to take hold. Fewer is better.",
+    },
+    "water_L_per_m2": {
+        "card_label": "Water used",
+        "technical": "L/m² over the season",
+        "meaning": "Irrigation water applied per square metre of growing area. Lower is better.",
+    },
+}
+
+# APDCL (Assam Power Distribution Company Limited) Domestic-B tariff
+# (5-30 kW load, the category a polyhouse control circuit would typically
+# fall under), AERC Tariff Order FY2026-27: slabs run Rs 6.75-7.74/unit
+# (https://billcalculator.in/1-unit-electricity-price-in-assam/, citing the
+# official APDCL tariff schedule). This project uses Rs 7.00/unit as a
+# representative mid-slab rate -- a communication aid to make the fan's
+# energy cost concrete, not a precise billing calculation (a real
+# installation's exact slab depends on total farm load, connection type,
+# and the 5% electricity duty/fixed charges layered on top).
+ELECTRICITY_RATE_INR_PER_KWH = 7.00
 
 
 # --- Precomputed data loading (default path -- no simulation, no network) ----
@@ -332,19 +396,30 @@ def pct_delta(value: float, baseline: float) -> float | None:
     return (value - baseline) / baseline * 100.0
 
 
-def render_headline_metric_card(col, spec: dict[str, str], mpc_mean: float, mpc_sd: float, fixed_mean: float) -> None:
+def render_headline_metric_card(col, key: str, mpc_mean: float, mpc_sd: float, fixed_mean: float) -> None:
+    """A plain-language metric card: big plain-English number, technical term
+    demoted to the delta line, one-line "what this means" underneath.
+    """
+    spec = METRIC_SPEC_BY_KEY[key]
+    text = HEADLINE_CARD_TEXT[key]
     value_str = f"{spec['fmt'].format(mpc_mean)} ± {spec['fmt'].format(mpc_sd)}"
     if spec["unit"]:
         value_str += f" {spec['unit']}"
     delta = pct_delta(mpc_mean, fixed_mean)
     if delta is None:
-        col.metric(spec["label"], value_str, delta="Fixed is already 0 here", delta_color="off")
+        col.metric(text["card_label"], value_str, delta="Fixed is already 0 here", delta_color="off")
     else:
-        col.metric(spec["label"], value_str, delta=f"{delta:+.0f}% vs Fixed", delta_color="inverse")
+        col.metric(text["card_label"], value_str, delta=f"{delta:+.0f}% vs Fixed", delta_color="inverse")
+    col.caption(f"_{text['technical']}._ {text['meaning']}")
 
 
 def build_regime_summary_table(summary: pd.DataFrame) -> pd.DataFrame:
-    """Controllers as rows, every metric as a 'mean +/- sd' string column."""
+    """Controllers as rows, every metric as a 'mean +/- sd' string column.
+
+    Column headers are plain-language (spec["plain"]); the technical term
+    (spec["technical"]) is attached as a hover tooltip via column_config
+    where this table is rendered, not deleted.
+    """
     rows: dict[str, dict[str, str]] = {}
     for label in CONTROLLER_LABELS:
         key = CONTROLLER_KEY[label]
@@ -354,18 +429,25 @@ def build_regime_summary_table(summary: pd.DataFrame) -> pd.DataFrame:
         for spec in METRIC_SPECS:
             mean = summary.loc[key, f"{spec['key']}_mean"]
             sd = summary.loc[key, f"{spec['key']}_std"]
-            col_label = spec["label"] + (f" ({spec['unit']})" if spec["unit"] else "")
-            row[col_label] = f"{spec['fmt'].format(mean)} ± {spec['fmt'].format(sd)}"
+            row[spec["plain"]] = f"{spec['fmt'].format(mean)} ± {spec['fmt'].format(sd)}"
         rows[label] = row
     table = pd.DataFrame(rows).T
     table.index.name = "Controller"
     return table.reset_index()
 
 
-def build_headline_bar(summary: pd.DataFrame, spec: dict[str, str]) -> go.Figure:
+def regime_summary_column_config() -> dict[str, "st.column_config.Column"]:
+    """Tooltip (technical term) for every plain-language column build_regime_summary_table produces."""
+    return {
+        spec["plain"]: st.column_config.Column(spec["plain"], help=spec["technical"]) for spec in METRIC_SPECS
+    }
+
+
+def build_headline_bar(summary: pd.DataFrame, key: str, plain_label: str, technical_label: str) -> go.Figure:
+    spec = METRIC_SPEC_BY_KEY[key]
     labels = [label for label in CONTROLLER_LABELS if CONTROLLER_KEY[label] in summary.index]
-    means = [summary.loc[CONTROLLER_KEY[label], f"{spec['key']}_mean"] for label in labels]
-    sds = [summary.loc[CONTROLLER_KEY[label], f"{spec['key']}_std"] for label in labels]
+    means = [summary.loc[CONTROLLER_KEY[label], f"{key}_mean"] for label in labels]
+    sds = [summary.loc[CONTROLLER_KEY[label], f"{key}_std"] for label in labels]
     colors = [CONTROLLER_COLOR[label] for label in labels]
     fig = go.Figure(
         go.Bar(
@@ -374,9 +456,40 @@ def build_headline_bar(summary: pd.DataFrame, spec: dict[str, str]) -> go.Figure
             marker_color=colors,
         )
     )
-    fig.update_yaxes(title_text=f"{spec['label']} ({spec['unit']})" if spec["unit"] else spec["label"])
-    fig.update_layout(title=dict(text=spec["label"], font=dict(size=13, color=TEXT_SECONDARY)))
+    fig.update_yaxes(title_text=f"{plain_label} ({spec['unit']})" if spec["unit"] else plain_label)
+    fig.update_layout(title=dict(text=f"{plain_label} · {technical_label}", font=dict(size=12, color=TEXT_SECONDARY)))
     return style_fig(fig, height=340)
+
+
+def build_plain_summary(regime_key: str, summary: pd.DataFrame) -> str:
+    """The plain-language paragraph at the top of each regime tab -- framed
+    around whichever outcomes are actually real in that regime (Regime A is
+    a disease story, Regime B's disease risk is ~0 for everyone so it's a
+    water/leaf-wetness story instead; see Honest Limitation #5 on the
+    Validation page for why tomato's calendar drives both regimes).
+    """
+    alt_delta = pct_delta(summary.loc["mpc", "alternaria_risk_mean"], summary.loc["fixed", "alternaria_risk_mean"])
+    wet_delta = pct_delta(summary.loc["mpc", "leaf_wet_hours_mean"], summary.loc["fixed", "leaf_wet_hours_mean"])
+    water_delta = pct_delta(summary.loc["mpc", "water_L_per_m2_mean"], summary.loc["fixed", "water_L_per_m2_mean"])
+    n_years = int(summary["n_years"].iloc[0]) if "n_years" in summary.columns else 5
+
+    if regime_key == "A" and alt_delta is not None:
+        return (
+            f"In Assam's monsoon, the biggest threat to a polyhouse crop is not heat -- it is fungal disease "
+            f"from constant leaf wetness. Across {n_years} simulated seasons, the predictive controller cut "
+            f"disease risk by {abs(alt_delta):.0f}% and hours with wet leaves by {abs(wet_delta):.0f}% compared "
+            "to the timer schedule most growers run today."
+        )
+    if water_delta is not None:
+        return (
+            f"In Assam's dry season, water and leaf-wetness control matter most. Across {n_years} simulated "
+            f"seasons, the predictive controller cut hours with wet leaves by {abs(wet_delta):.0f}% and water "
+            f"use by {abs(water_delta):.0f}% compared to the timer schedule most growers run today."
+        )
+    return (
+        f"Across {n_years} simulated seasons, the predictive controller reduced disease risk and leaf-wetness "
+        "compared to the timer schedule most growers run today."
+    )
 
 
 def render_headline_results() -> None:
@@ -392,31 +505,82 @@ def render_headline_results() -> None:
         with tab:
             summary = load_regime_summary(regime_key)
             n_years = int(summary["n_years"].iloc[0]) if "n_years" in summary.columns else None
-            if n_years:
-                st.caption(f"n = {n_years} years, mean ± sd across years.")
+            night_narrow_pct = load_vent_authority()["frac_narrow_night"] * 100.0
 
-            st.subheader("Predictive (MPC) vs. the Fixed baseline")
+            st.info(build_plain_summary(regime_key, summary))
+            if n_years:
+                st.caption(f"n = {n_years} simulated years, mean ± sd across years.")
+
+            st.subheader("Predictive controller vs. the Fixed timer most growers run today")
             st.caption(
                 "Fixed is the naive timer schedule -- what a smallholder actually runs today with no sensors. "
-                "That, not Threshold, is the comparison a judge cares about."
+                "That, not Threshold, is the comparison that matters."
             )
             cols = st.columns(3)
             for col, key in zip(cols, HEADLINE_METRIC_KEYS):
-                spec = METRIC_SPEC_BY_KEY[key]
                 mpc_mean = summary.loc["mpc", f"{key}_mean"]
                 mpc_sd = summary.loc["mpc", f"{key}_std"]
                 fixed_mean = summary.loc["fixed", f"{key}_mean"]
-                render_headline_metric_card(col, spec, mpc_mean, mpc_sd, fixed_mean)
+                render_headline_metric_card(col, key, mpc_mean, mpc_sd, fixed_mean)
+
+            if regime_key == "A":
+                st.warning(
+                    "**Why \"Water used\" shows a -100% change:** during the monsoon, rainfall already exceeds "
+                    "what the crop needs, so *any* rain-aware controller (Threshold or Predictive alike) "
+                    "irrigates zero -- this is a feature of the monsoon season, not evidence the predictive "
+                    "controller is smarter about water. Real, differentiated irrigation decisions happen in "
+                    f"the **{REGIME_LABELS['B']}** tab -- that's where the water number actually reflects "
+                    "controller behaviour."
+                )
+
+            fan_mean = summary.loc["mpc", "fan_kWh_mean"]
+            fan_cost = fan_mean * ELECTRICITY_RATE_INR_PER_KWH
+            st.info(
+                f"**What the leaf-wetness reduction costs to run:** the circulation fan is the actuator that "
+                f"buys the win above -- night-time ventilation alone can't reach dry-enough air (see "
+                "**Why Ventilation Alone Fails**). Running it uses real electricity: "
+                f"{fan_mean:,.0f} kWh over the season, about **₹{fan_cost:,.0f}** at Assam's APDCL tariff "
+                f"(~₹{ELECTRICITY_RATE_INR_PER_KWH:.0f}/unit) -- against ₹0 for the Fixed timer, which runs no "
+                "fan at all. The benefit above is real; so is this cost."
+            )
 
             st.subheader("Full comparison -- all controllers, all metrics")
             table = build_regime_summary_table(summary)
-            st.dataframe(table, use_container_width=True, hide_index=True)
+            st.dataframe(
+                table, use_container_width=True, hide_index=True, column_config=regime_summary_column_config()
+            )
+            st.caption(
+                "Hover a column header for its technical name. **\"% hours in ideal humidity range\"**: "
+                "Predictive scores lowest here on purpose -- its objective deliberately deprioritises that "
+                f"target in favour of leaf-wetness, because the target is unreachable for {night_narrow_pct:.1f}% "
+                "of monsoon night hours (see **Why Ventilation Alone Fails**). This is working as designed, "
+                "not an oversight."
+            )
 
-            st.subheader("Headline metrics by controller (error bars = sd across years)")
+            st.subheader("Headline outcomes by controller (error bars = year-to-year variation)")
             bar_cols = st.columns(3)
+            bar_labels = {
+                "alternaria_risk": ("Disease risk", "Alternaria solani risk units"),
+                "leaf_wet_hours": ("Hours with wet leaves", "leaf-wet hours"),
+                "water_L_per_m2": ("Water used", "L/m² over the season"),
+            }
             for col, key in zip(bar_cols, HEADLINE_METRIC_KEYS):
-                spec = METRIC_SPEC_BY_KEY[key]
-                col.plotly_chart(build_headline_bar(summary, spec), use_container_width=True)
+                plain, technical = bar_labels[key]
+                col.plotly_chart(build_headline_bar(summary, key, plain, technical), use_container_width=True)
+
+            fixed_alt_mean = summary.loc["fixed", "alternaria_risk_mean"]
+            fixed_alt_sd = summary.loc["fixed", "alternaria_risk_std"]
+            if fixed_alt_mean > 0:
+                mpc_alt_mean = summary.loc["mpc", "alternaria_risk_mean"]
+                mpc_alt_sd = summary.loc["mpc", "alternaria_risk_std"]
+                st.caption(
+                    f"**Disease risk error bars:** the Fixed baseline swings a lot year to year "
+                    f"({fixed_alt_mean:.1f} ± {fixed_alt_sd:.1f} -- the swing is "
+                    f"{fixed_alt_sd / fixed_alt_mean * 100:.0f}% of the mean) because monsoon severity itself "
+                    f"varies season to season. Predictive's error bar is tiny by comparison "
+                    f"({mpc_alt_mean:.1f} ± {mpc_alt_sd:.1f}) because it holds disease risk near zero *every* "
+                    "season -- consistency is itself a result, not just the low average."
+                )
 
 
 # --- Page 1: Live Simulation ---------------------------------------------------
@@ -829,29 +993,56 @@ def render_controller_comparison() -> None:
             "fan_kwh", "vent_actuations", "fan_actuations",
         ]
     ]
-    summary_df.columns = [
-        "Water (L/m²)", "% hours VPD band", "Wallin DSV", "Alternaria risk", "Leaf-wet hours",
-        "Fan (kWh)", "Vent actuations", "Fan actuations",
-    ]
+    # Plain-language primary label; technical term demoted to a column tooltip
+    # (hover the header), not deleted -- see METRIC_SPECS' comment.
+    COMPARISON_COLUMN_META = {
+        "Water used": "L/m² applied over the season",
+        "% hours in ideal humidity range": "% hours in achievable VPD band",
+        "Late blight risk (temperate model)": "Wallin DSV",
+        "Early blight risk": "Alternaria solani risk units",
+        "Hours with wet leaves": "leaf-wet hours",
+        "Fan electricity": "fan energy, kWh",
+        "Vent movements": "vent actuations",
+        "Fan movements": "fan actuations",
+    }
+    summary_df.columns = list(COMPARISON_COLUMN_META.keys())
     st.subheader(f"Comparison table -- {regime_label}, {year}")
     st.caption(
         "Colour is relative to the **Fixed** row (green = better, red = worse) -- every metric here is "
-        "lower-is-better, so this reads as a comparison against the naive baseline, not three separate columns."
+        "lower-is-better, so this reads as a comparison against the naive baseline, not three separate columns. "
+        "Hover a column header for its technical name."
     )
     st.dataframe(
         style_vs_fixed(summary_df).format({
-            "Water (L/m²)": "{:.1f}", "% hours VPD band": "{:.2f}",
-            "Wallin DSV": "{:.0f}", "Alternaria risk": "{:.0f}", "Leaf-wet hours": "{:.0f}",
-            "Fan (kWh)": "{:.2f}", "Vent actuations": "{:.0f}", "Fan actuations": "{:.0f}",
+            "Water used": "{:.1f}", "% hours in ideal humidity range": "{:.2f}",
+            "Late blight risk (temperate model)": "{:.0f}", "Early blight risk": "{:.0f}",
+            "Hours with wet leaves": "{:.0f}", "Fan electricity": "{:.2f}",
+            "Vent movements": "{:.0f}", "Fan movements": "{:.0f}",
         }),
         use_container_width=True,
+        column_config={
+            plain: st.column_config.Column(plain, help=technical) for plain, technical in COMPARISON_COLUMN_META.items()
+        },
+    )
+    st.caption(
+        "**\"% hours in ideal humidity range\":** Predictive scores lowest here on purpose -- night-time "
+        "ventilation can't reach that target for most monsoon nights, so the controller deliberately spends "
+        "its effort on leaf-wetness instead (see **Why Ventilation Alone Fails**). Working as designed."
     )
 
-    st.subheader("Cumulative disease severity (DSV)")
+    st.subheader("Cumulative late blight risk (temperate model)")
+    st.caption("Technical name: cumulative Wallin DSV. See Honest Limitation #3 on the Validation page for why this reads low in Guwahati's climate regardless of controller.")
     st.plotly_chart(build_dsv_overlay(results), use_container_width=True)
 
     st.subheader("Cumulative water use")
     st.plotly_chart(build_water_overlay(results), use_container_width=True)
+    if regime_key == "A":
+        st.caption(
+            "Threshold and Predictive both flatten at zero here because monsoon rainfall already exceeds crop "
+            "water demand, so any rain-aware controller irrigates nothing -- not because Predictive is "
+            "cleverer about water. Switch the sidebar to **Dry season** to see irrigation decisions that "
+            "actually differ between controllers."
+        )
 
     with st.expander("Case study: irrigating right before rain (a caveat, not a headline)", expanded=False):
         st.caption(
@@ -1216,7 +1407,7 @@ def render_deployment_cost() -> None:
         "small enough to run on an ESP32-class microcontroller -- no cloud inference, no GPU, no external API "
         "call in the control loop itself.\n"
         "- **Deterministic and needs no network connection.** Fixed and Threshold are pure rule-based logic; "
-        "Predictive's candidate search runs entirely on locally-available (or short-horizon on-device) "
+        "Predictive plans on a 12-hour receding horizon (replanned every hour) using locally-available "
         "weather. None of the three controllers requires internet connectivity to keep operating -- a real "
         "advantage for rural polyhouse sites with unreliable connectivity.\n"
         "- **Retrofits onto existing structures.** The BOM above bolts onto an existing polyhouse (sensors, "
@@ -1260,6 +1451,86 @@ def render_deployment_cost() -> None:
     )
 
 
+# --- Page: For Growers (plain-language, last in the nav on purpose) -------------
+#
+# This page exists to show end-user thinking for the Sustainability Impact
+# score -- it is not the headline and must not displace the technical pages
+# a judge reads first. No jargon, no equations, no metric abbreviations;
+# every number is pulled from the same regime summaries the rest of the app
+# uses, never re-typed by hand, so it can't drift out of sync with them.
+
+
+def render_for_growers() -> None:
+    st.title("For Growers")
+    st.caption("Plain language, no jargon, no equations -- what this means for someone running a polyhouse.")
+
+    st.header("The problem, in two sentences")
+    st.write(
+        "In Assam's monsoon, a polyhouse's real enemy isn't heat -- it's humidity. When leaves stay wet for "
+        "hours at a stretch, fungal disease takes hold, and a grower running the vents on a fixed clock has "
+        "no way to know when that's happening or to do anything about it."
+    )
+
+    st.header("What the system physically is")
+    st.write("A small kit that bolts onto an existing polyhouse -- it does not require building anything new:")
+    st.markdown(
+        "- Sensors that read temperature, humidity, sunlight, and soil moisture\n"
+        "- A motor that opens and closes the roof vent\n"
+        "- Two small fans that blow air gently across the leaves\n"
+        "- A valve that switches the drip irrigation on and off\n"
+        "- A small controller box that makes the decisions"
+    )
+    st.metric("Total cost to fit one polyhouse", f"₹{bom_total_inr():,.0f}")
+    st.caption("Full parts list and sourcing on the Deployment & Cost page.")
+
+    st.header("What it does differently from a timer")
+    st.write(
+        "A timer opens the vents at the same two clock times every day, no matter what the weather is "
+        "actually doing. This system instead looks up to 12 hours ahead at the weather, and -- the important "
+        "part -- runs the fans specifically at night, when opening the vents alone can't dry the air but "
+        "fungus is most likely to infect the leaves. It waters the crop only when the soil actually needs it, "
+        "and skips watering if rain is already on the way."
+    )
+
+    st.header("What a grower gets")
+    summary_a = load_regime_summary("A")
+    summary_b = load_regime_summary("B")
+    alt_delta = pct_delta(summary_a.loc["mpc", "alternaria_risk_mean"], summary_a.loc["fixed", "alternaria_risk_mean"])
+    wet_delta_a = pct_delta(summary_a.loc["mpc", "leaf_wet_hours_mean"], summary_a.loc["fixed", "leaf_wet_hours_mean"])
+    water_delta_b = pct_delta(summary_b.loc["mpc", "water_L_per_m2_mean"], summary_b.loc["fixed", "water_L_per_m2_mean"])
+    cols = st.columns(3)
+    if alt_delta is not None:
+        cols[0].metric("Less disease risk", f"{abs(alt_delta):.0f}% lower")
+        cols[0].caption("monsoon season, vs. a timer")
+    cols[1].metric("Fewer hours with wet leaves", f"{abs(wet_delta_a):.0f}% fewer")
+    cols[1].caption("monsoon season, vs. a timer")
+    if water_delta_b is not None:
+        cols[2].metric("Less water wasted", f"{abs(water_delta_b):.0f}% less")
+        cols[2].caption("dry season, vs. a timer -- see below for why monsoon water isn't the story")
+    st.caption(
+        "Water savings are shown for the **dry season**, not the monsoon: during the monsoon, rain alone "
+        "already covers what the crop needs, so the monsoon water number doesn't say much about the system -- "
+        "the dry season is where its irrigation decisions actually matter."
+    )
+
+    st.header("What it costs to run")
+    fan_mean = summary_a.loc["mpc", "fan_kWh_mean"]
+    fan_cost = fan_mean * ELECTRICITY_RATE_INR_PER_KWH
+    st.write(
+        f"Running the fans uses about {fan_mean:,.0f} units of electricity over a monsoon season -- roughly "
+        f"**₹{fan_cost:,.0f}** at Assam's APDCL electricity rate (~₹{ELECTRICITY_RATE_INR_PER_KWH:.0f} per "
+        "unit). That's the real running cost behind the disease-risk reduction above; it isn't free, and this "
+        "project doesn't pretend it is."
+    )
+
+    st.header("What it does not do")
+    st.warning(
+        "This system does **not** directly increase yield. What it does is reduce disease risk and cut "
+        "wasted water. Whether healthier, less-stressed plants also produce more or better fruit is likely, "
+        "but it is **not something this project measured** -- we are not claiming a yield number here."
+    )
+
+
 # --- App shell -------------------------------------------------------------------
 
 
@@ -1274,6 +1545,7 @@ def main() -> None:
         "Live Twin",
         "Validation & Limitations",
         "Deployment & Cost",
+        "For Growers",
     ]
 
     with st.sidebar:
@@ -1294,8 +1566,10 @@ def main() -> None:
         render_live_twin()
     elif page == "Validation & Limitations":
         render_validation_limitations()
-    else:
+    elif page == "Deployment & Cost":
         render_deployment_cost()
+    else:
+        render_for_growers()
 
 
 if __name__ == "__main__":
