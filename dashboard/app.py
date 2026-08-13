@@ -54,6 +54,7 @@ import math
 import sys
 import time
 import warnings
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -152,9 +153,12 @@ METRIC_SPECS: list[dict[str, str]] = [
     {"key": "water_L_per_m2", "plain": "Water used", "technical": "L/m² applied over the season", "unit": "L/m²", "fmt": "{:.1f}"},
     {"key": "leaf_wet_hours", "plain": "Hours with wet leaves", "technical": "leaf-wet hours", "unit": "h", "fmt": "{:.0f}"},
     {"key": "alternaria_risk", "plain": "Early blight risk", "technical": "Alternaria solani risk units", "unit": "units", "fmt": "{:.1f}"},
-    {"key": "wallin_dsv", "plain": "Late blight risk (temperate model)", "technical": "Wallin DSV", "unit": "", "fmt": "{:.1f}"},
     {
-        "key": "pct_hours_achievable_vpd_band", "plain": "% hours in ideal humidity range",
+        "key": "wallin_dsv", "plain": "Late blight risk",
+        "technical": "Wallin DSV (temperate-climate model)", "unit": "", "fmt": "{:.1f}",
+    },
+    {
+        "key": "pct_hours_achievable_vpd_band", "plain": "Ideal humidity %",
         "technical": "% hours in achievable VPD band", "unit": "%", "fmt": "{:.2f}",
     },
     {"key": "vent_actuations", "plain": "Vent movements", "technical": "vent actuations", "unit": "", "fmt": "{:.0f}"},
@@ -283,8 +287,21 @@ def inject_css() -> None:
             font-size: 0.84rem !important;
             font-weight: 500 !important;
             color: {TEXT_SECONDARY} !important;
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
         }}
-        [data-testid="stMetricValue"] {{ letter-spacing: -0.01em; }}
+        /* Metric values must never ellipsize -- wrap onto a second line
+           instead of clipping. A number that's the whole point of the card
+           being cut off ("720.0 L...") reads as broken, not polished. */
+        [data-testid="stMetricValue"], [data-testid="stMetricValue"] > div {{
+            letter-spacing: -0.01em;
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+            word-break: break-word;
+            line-height: 1.2 !important;
+        }}
         [data-testid="stMetricDelta"] {{
             font-size: 0.8rem !important;
             font-weight: 600 !important;
@@ -601,13 +618,12 @@ def render_headline_metric_card(col, key: str, mpc_mean: float, mpc_sd: float, f
     spec = METRIC_SPEC_BY_KEY[key]
     text = HEADLINE_CARD_TEXT[key]
     value_str = f"{spec['fmt'].format(mpc_mean)} ± {spec['fmt'].format(mpc_sd)}"
-    if spec["unit"]:
-        value_str += f" {spec['unit']}"
+    label = f"{text['card_label']} ({spec['unit']})" if spec["unit"] else text["card_label"]
     delta = pct_delta(mpc_mean, fixed_mean)
     if delta is None:
-        col.metric(text["card_label"], value_str, delta="Fixed is already 0 here", delta_color="off")
+        col.metric(label, value_str, delta="Fixed is already 0 here", delta_color="off")
     else:
-        col.metric(text["card_label"], value_str, delta=f"{delta:+.0f}% vs Fixed", delta_color="inverse")
+        col.metric(label, value_str, delta=f"{delta:+.0f}% vs Fixed", delta_color="inverse")
     col.caption(f"_{text['technical']}._ {text['meaning']}")
 
 
@@ -634,11 +650,35 @@ def build_regime_summary_table(summary: pd.DataFrame) -> pd.DataFrame:
     return table.reset_index()
 
 
+# Explicit pixel widths so every column (including "Controller") is sized to
+# its content instead of Streamlit's auto-share-of-container-width, which is
+# what was clipping headers like "Vent movements" -- these are mean +/- sd
+# strings (e.g. "720.0 ± 0.0"), wider than a bare number, hence the larger
+# widths than a plain numeric table would need.
+_REGIME_TABLE_COLUMN_WIDTHS: dict[str, int] = {
+    "Controller": 100,
+    "Water used": 120,
+    "Hours with wet leaves": 140,
+    "Early blight risk": 120,
+    "Late blight risk": 120,
+    "Ideal humidity %": 130,
+    "Vent movements": 120,
+    "Fan electricity": 120,
+}
+
+
 def regime_summary_column_config() -> dict[str, "st.column_config.Column"]:
-    """Tooltip (technical term) for every plain-language column build_regime_summary_table produces."""
-    return {
-        spec["plain"]: st.column_config.Column(spec["plain"], help=spec["technical"]) for spec in METRIC_SPECS
+    """Tooltip (technical term) + explicit width for every plain-language
+    column build_regime_summary_table produces, so no header or cell clips.
+    """
+    config = {
+        spec["plain"]: st.column_config.Column(
+            spec["plain"], help=spec["technical"], width=_REGIME_TABLE_COLUMN_WIDTHS.get(spec["plain"], 110)
+        )
+        for spec in METRIC_SPECS
     }
+    config["Controller"] = st.column_config.Column("Controller", width=_REGIME_TABLE_COLUMN_WIDTHS["Controller"])
+    return config
 
 
 def build_headline_bar(summary: pd.DataFrame, key: str, plain_label: str, technical_label: str) -> go.Figure:
@@ -747,10 +787,10 @@ def render_headline_results() -> None:
             st.subheader("Full comparison -- all controllers, all metrics")
             table = build_regime_summary_table(summary)
             st.dataframe(
-                table, use_container_width=True, hide_index=True, column_config=regime_summary_column_config()
+                table, width="content", hide_index=True, column_config=regime_summary_column_config()
             )
             st.caption(
-                "Hover a column header for its technical name. **\"% hours in ideal humidity range\"**: "
+                "Hover a column header for its technical name. **\"Ideal humidity %\"**: "
                 "Predictive scores lowest here on purpose -- its objective deliberately deprioritises that "
                 f"target in favour of leaf-wetness, because the target is unreachable for {night_narrow_pct:.1f}% "
                 "of monsoon night hours (see **Why Ventilation Alone Fails**). This is working as designed, "
@@ -873,25 +913,49 @@ def _render_result(res: pd.DataFrame, baseline: pd.DataFrame, vpd_low: float, vp
     metrics = compute_metrics(res, vpd_low, vpd_high)
     base_metrics = compute_metrics(baseline, vpd_low, vpd_high)
 
-    cols = st.columns(5)
+    # Two rows (3 + 2), not one row of 5 -- five cards squeezed into one row
+    # is what was truncating values at 1366px. Unit lives in the label, not
+    # the value, so the value itself is always just the number.
     card_specs = [
         ("Water used", "water_L_per_m2", "L/m²", "{:.1f}", "inverse"),
         ("Hours in VPD band", "pct_vpd_band", "%", "{:.1f}", "normal"),
-        ("Cumulative DSV", "cumulative_dsv", "", "{:.0f}", "inverse"),
         ("Leaf-wet hours", "leaf_wet_hours", "h", "{:.0f}", "inverse"),
+        ("Cumulative DSV", "cumulative_dsv", "", "{:.0f}", "inverse"),
         ("Fan energy", "fan_kwh", "kWh", "{:.2f}", "inverse"),
     ]
-    for col, (label, key, unit, fmt, delta_color) in zip(cols, card_specs):
-        value = metrics[key]
-        delta = value - base_metrics[key]
-        col.metric(
-            label,
-            f"{fmt.format(value)}{(' ' + unit) if unit else ''}",
-            delta=("baseline" if is_baseline else f"{delta:+.1f} vs Fixed"),
-            delta_color=("off" if is_baseline else delta_color),
-        )
+    rows = [card_specs[:3], card_specs[3:]]
+    for row_specs in rows:
+        row_cols = st.columns(len(row_specs))
+        for col, (label, key, unit, fmt, delta_color) in zip(row_cols, row_specs):
+            value = metrics[key]
+            delta = value - base_metrics[key]
+            col.metric(
+                f"{label} ({unit})" if unit else label,
+                fmt.format(value),
+                delta=("baseline" if is_baseline else f"{delta:+.1f} vs Fixed"),
+                delta_color=("off" if is_baseline else delta_color),
+            )
 
     st.plotly_chart(build_live_figure(res, vpd_low, vpd_high), use_container_width=True)
+
+
+def default_live_date_range(regime_key: str, min_date: date, max_date: date, span_days: int = 13) -> tuple[date, date]:
+    """A regime-appropriate default date range guaranteed to fall inside the
+    cached weather record -- walks backward from the latest cached year to
+    find one where the regime's start date plus a span_days window is fully
+    covered, instead of a hardcoded year that eventually falls outside the
+    cache (a hardcoded "2025-06-01" default is what let the picker show a
+    meaningless 2026 range once later years got cached).
+    """
+    for year in range(max_date.year, min_date.year - 1, -1):
+        start = date(year, 6, 1) if regime_key == "A" else date(year, 11, 1)
+        end = start + timedelta(days=span_days)
+        if min_date <= start and end <= max_date:
+            return start, end
+    # No full regime window is cached at all -- fall back to the most
+    # recent span_days the cache does have, still within [min_date, max_date].
+    fallback_start = max(min_date, max_date - timedelta(days=span_days))
+    return fallback_start, max_date
 
 
 def render_live_simulation() -> None:
@@ -908,18 +972,26 @@ def render_live_simulation() -> None:
         )
 
         if live_mode:
+            # The slow-Predictive warning is shown immediately when the
+            # toggle flips on -- before the date range, controller, or Run
+            # button are even reached -- so it's seen before it can be
+            # triggered, not after.
             st.warning(
                 "**Live mode simulates on demand.** Fixed/Threshold finish in a few seconds; "
                 "**Predictive (MPC) can take 2-4 minutes** for a 90-day window (a joint "
                 "vent+fan candidate search re-run every simulated hour). Avoid long ranges "
                 "with Predictive on a shared server."
             )
+            regime_label = st.selectbox("Regime", list(REGIME_LABELS.values()), index=0, key="live_regime")
+            regime_key = REGIME_KEY_FROM_LABEL[regime_label]
             weather = load_weather_live()
             min_date, max_date = weather.index.min().date(), weather.index.max().date()
+            default_start, default_end = default_live_date_range(regime_key, min_date, max_date)
             date_range = st.date_input(
                 "Date range",
-                value=(pd.Timestamp("2025-06-01").date(), pd.Timestamp("2025-06-14").date()),
+                value=(default_start, default_end),
                 min_value=min_date, max_value=max_date,
+                help=f"Clamped to the cached weather record: {min_date} to {max_date}.",
             )
             controller_label = st.selectbox("Controller", CONTROLLER_LABELS, index=0)
             crop_stage = st.selectbox("Crop stage", list(CROP_STAGE_VPD_BAND), index=2)
@@ -942,7 +1014,18 @@ def render_live_simulation() -> None:
     if live_mode:
         if run_clicked:
             start_date, end_date = date_range if isinstance(date_range, tuple) and len(date_range) == 2 else (date_range, date_range)
+            if start_date > end_date:
+                st.error(f"Start date ({start_date}) is after end date ({end_date}) -- pick a valid range.")
+                return
             start_str, end_str = f"{start_date} 00:00:00", f"{end_date} 23:00:00"
+            weather = load_weather_live()
+            n_hours_available = int(((weather.index >= start_str) & (weather.index <= end_str)).sum())
+            if n_hours_available == 0:
+                st.error(
+                    f"No cached weather data for {start_date} to {end_date}. The cache covers "
+                    f"{weather.index.min().date()} to {weather.index.max().date()} -- pick a range inside that."
+                )
+                return
             with st.spinner("Running simulation..."):
                 res = run_window_live(CONTROLLER_KEY[controller_label], start_str, end_str)
                 baseline = run_window_live("fixed", start_str, end_str)
@@ -1187,45 +1270,55 @@ def render_controller_comparison() -> None:
 
     summary_rows = {label: summarize_controller(results[CONTROLLER_KEY[label]]) for label in CONTROLLER_LABELS}
     summary_df = pd.DataFrame(summary_rows).T
+    # "fan_actuations" (Fan movements) is intentionally left out of the
+    # displayed table -- 8 columns of mean+-sd-width numbers does not fit
+    # readably even at 1920px, and it's the least central of the eight to
+    # the headline story. The full number is still in
+    # results/precomputed/{fixed,threshold,mpc}.parquet -- dropped from
+    # the *view*, not from the underlying data.
     summary_df = summary_df[
         [
             "water_L_per_m2", "pct_vpd_band", "cumulative_dsv", "alternaria_risk", "leaf_wet_hours",
-            "fan_kwh", "vent_actuations", "fan_actuations",
+            "fan_kwh", "vent_actuations",
         ]
     ]
     # Plain-language primary label; technical term demoted to a column tooltip
-    # (hover the header), not deleted -- see METRIC_SPECS' comment.
+    # (hover the header), not deleted -- see METRIC_SPECS' comment. Mirrors
+    # METRIC_SPECS' plain/technical pairs so the same metric reads the same
+    # way on every page.
     COMPARISON_COLUMN_META = {
-        "Water used": "L/m² applied over the season",
-        "% hours in ideal humidity range": "% hours in achievable VPD band",
-        "Late blight risk (temperate model)": "Wallin DSV",
-        "Early blight risk": "Alternaria solani risk units",
-        "Hours with wet leaves": "leaf-wet hours",
-        "Fan electricity": "fan energy, kWh",
-        "Vent movements": "vent actuations",
-        "Fan movements": "fan actuations",
+        "Water used": ("L/m² applied over the season", 120),
+        "Ideal humidity %": ("% hours in achievable VPD band", 130),
+        "Late blight risk": ("Wallin DSV (temperate-climate model)", 120),
+        "Early blight risk": ("Alternaria solani risk units", 120),
+        "Hours with wet leaves": ("leaf-wet hours", 140),
+        "Fan electricity": ("fan energy, kWh", 120),
+        "Vent movements": ("vent actuations", 120),
     }
     summary_df.columns = list(COMPARISON_COLUMN_META.keys())
     st.subheader(f"Comparison table -- {regime_label}, {year}")
     st.caption(
         "Colour is relative to the **Fixed** row (green = better, red = worse) -- every metric here is "
         "lower-is-better, so this reads as a comparison against the naive baseline, not three separate columns. "
-        "Hover a column header for its technical name."
+        "Hover a column header for its technical name. Fan movements (actuation count) is omitted from this "
+        "view to keep every column readable without scrolling -- the full number is in "
+        "results/precomputed/."
     )
     st.dataframe(
         style_vs_fixed(summary_df).format({
-            "Water used": "{:.1f}", "% hours in ideal humidity range": "{:.2f}",
-            "Late blight risk (temperate model)": "{:.0f}", "Early blight risk": "{:.0f}",
+            "Water used": "{:.1f}", "Ideal humidity %": "{:.2f}",
+            "Late blight risk": "{:.0f}", "Early blight risk": "{:.0f}",
             "Hours with wet leaves": "{:.0f}", "Fan electricity": "{:.2f}",
-            "Vent movements": "{:.0f}", "Fan movements": "{:.0f}",
+            "Vent movements": "{:.0f}",
         }),
-        use_container_width=True,
+        width="content",
         column_config={
-            plain: st.column_config.Column(plain, help=technical) for plain, technical in COMPARISON_COLUMN_META.items()
+            plain: st.column_config.Column(plain, help=technical, width=width)
+            for plain, (technical, width) in COMPARISON_COLUMN_META.items()
         },
     )
     st.caption(
-        "**\"% hours in ideal humidity range\":** Predictive scores lowest here on purpose -- night-time "
+        "**\"Ideal humidity %\":** Predictive scores lowest here on purpose -- night-time "
         "ventilation can't reach that target for most monsoon nights, so the controller deliberately spends "
         "its effort on leaf-wetness instead (see **Why Ventilation Alone Fails**). Working as designed."
     )
@@ -1713,16 +1806,25 @@ def render_deployment_cost() -> None:
         [
             {
                 "Component": item.component, "Role": item.role, "Qty": item.qty,
-                "Unit price (INR)": item.unit_price_inr, "Line total (INR)": item.line_total_inr,
+                "Unit price": item.unit_price_inr, "Line total": item.line_total_inr,
                 "Source": item.source_name,
             }
             for item in BOM
         ]
     )
     st.dataframe(
-        bom_df.style.format({"Unit price (INR)": "₹{:.0f}", "Line total (INR)": "₹{:.0f}"}),
-        use_container_width=True, hide_index=True,
+        bom_df.style.format({"Unit price": "₹{:.0f}", "Line total": "₹{:.0f}"}),
+        width="content", hide_index=True,
+        column_config={
+            "Component": st.column_config.Column("Component", width=150),
+            "Role": st.column_config.Column("Role", width=280),
+            "Qty": st.column_config.Column("Qty", width=55),
+            "Unit price": st.column_config.Column("Unit price", help="Indian Rupees (INR)", width=95),
+            "Line total": st.column_config.Column("Line total", help="Indian Rupees (INR)", width=95),
+            "Source": st.column_config.Column("Source", width=220),
+        },
     )
+    st.caption("Unit price and Line total are in Indian Rupees (₹).")
     total_inr = bom_total_inr()
     st.metric("Total hardware cost per polyhouse", f"₹{total_inr:,.0f}")
     st.caption(
@@ -1770,11 +1872,15 @@ def render_deployment_cost() -> None:
     total_alternaria = alternaria_reduction_per_house * n_units
     total_leaf_wet = leaf_wet_reduction_per_house * n_units
 
+    # Units live in the label, not the value -- and water is shown in
+    # kilolitres (the unit Indian water utilities themselves bill in) rather
+    # than litres, since N up to 500 houses can put the litre figure into
+    # the tens of millions, too wide for a metric card at any font size.
     cols = st.columns(4)
-    cols[0].metric("Total hardware cost", f"₹{total_cost:,.0f}")
-    cols[1].metric("Water saved / season", f"{total_water:,.0f} L")
-    cols[2].metric("Alternaria risk reduction", f"{total_alternaria:,.0f} units")
-    cols[3].metric("Leaf-wet hours avoided", f"{total_leaf_wet:,.0f} h")
+    cols[0].metric("Total hardware cost (₹)", f"{total_cost:,.0f}")
+    cols[1].metric("Water saved / season (kL)", f"{total_water / 1000.0:,.1f}")
+    cols[2].metric("Disease risk avoided (units)", f"{total_alternaria:,.0f}")
+    cols[3].metric("Leaf-wet hours avoided (h)", f"{total_leaf_wet:,.0f}")
     st.caption(
         f"N × (Predictive − Fixed) from the Headline Results table for {REGIME_LABELS[proj_regime_key]}, "
         "× 100 m² floor area per house for water. Does not model shared infrastructure, water-source limits, "

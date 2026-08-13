@@ -1,22 +1,90 @@
 # avinya-twin
 
 A physics-based digital twin of a 100 m² plastic polyhouse growing tomato in
-Guwahati, Assam, India (26.19°N, 91.69°E). Built for controller-comparison
-research: the regional problem here is **not heat, it is monsoon humidity
-and fungal disease pressure**, and this simulator exists to reproduce that
-regime faithfully enough that vent/irrigation controllers built on top of it
-can be trusted.
+Guwahati, Assam, India (26.19°N, 91.69°E), used to compare vent/fan/irrigation
+controllers on the same simulated plant. The central engineering finding: in
+Guwahati's monsoon, **ventilation alone has almost no authority over indoor
+humidity at night** -- during JJA monsoon nights, 82.7% of hours have less
+than 0.2 kPa of achievable VPD range between vents fully closed and fully
+open, because outdoor air is itself already near-saturated (mean RH_out
+85.9%). Opening vents at night mostly just swaps saturated indoor air for
+near-saturated outdoor air. That's why a second actuator -- a circulation fan
+that thins the leaf boundary layer instead of exchanging bulk air -- exists in
+this project, and why a predictive controller that uses it beats a naive
+timer on leaf-wetness even though it can't move VPD any more than the naive
+controller can.
 
-No machine learning, no curve-fitting. Every constant is sourced (FAO-56,
-Tetens, ASHRAE, Wallin/BLITECAST) and every function is unit-annotated.
-Dependencies: numpy, pandas, requests, matplotlib, pytest -- nothing else
-(the `config.yaml` loader is a small hand-rolled parser rather than a
-PyYAML dependency; see `sim/config.py`).
+**Live app**: https://guwahati-polyhouse.streamlit.app
+
+No machine learning, no curve-fitting. Every physical constant is sourced
+(FAO-56, Tetens, ASHRAE, Wallin/BLITECAST, FAST/TOMCAST) and every function is
+unit-annotated. Simulator dependencies: numpy, pandas, requests, matplotlib,
+pytest (the `config.yaml` loader is a small hand-rolled parser rather than a
+PyYAML dependency; see `sim/config.py`). The dashboard adds streamlit, plotly,
+and pyarrow on top -- see `requirements.txt`.
+
+## Headline results (5-year mean ± sd, Predictive vs. Fixed)
+
+Fixed is the naive timer schedule most smallholders actually run today
+(fixed vent window, fixed irrigation clock, no fan). Full methodology,
+every controller's logic, and the per-year numbers behind these means are
+in the app's **Headline Results** and **Validation & Limitations** pages,
+and in `results/regime_A_summary.csv` / `results/regime_B_summary.csv`.
+
+### Regime A -- Monsoon (Jun 1 - Aug 29)
+
+| metric | Fixed | Threshold | **Predictive (MPC)** |
+|---|---|---|---|
+| Water (L/m²) | 720.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 |
+| Leaf-wet hours | 1453.0 ± 55.9 | 1037.6 ± 57.5 | **785.8 ± 52.3** |
+| Alternaria (early blight) risk | 28.6 ± 10.3 | 1.2 ± 1.3 | **0.4 ± 0.5** |
+| Wallin (late blight) DSV | 23.4 ± 11.1 | 4.4 ± 2.1 | **2.0 ± 0.7** |
+| % hours in achievable VPD band | 12.31 ± 1.71 | 8.07 ± 1.00 | 1.82 ± 1.12 |
+| Vent actuations | 180.0 ± 0.0 | 199.4 ± 13.9 | 299.4 ± 39.4 |
+| Fan (kWh) | 0.00 ± 0.00 | 316.35 ± 12.87 | 506.85 ± 17.28 |
+
+### Regime B -- Dry season (Nov 1 - Jan 29)
+
+| metric | Fixed | Threshold | **Predictive (MPC)** |
+|---|---|---|---|
+| Water (L/m²) | 720.0 ± 0.0 | 121.0 ± 11.4 | 121.0 ± 11.4 |
+| Leaf-wet hours | 1337.8 ± 31.5 | 1110.6 ± 48.8 | **595.6 ± 88.1** |
+| Alternaria (early blight) risk | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 |
+| Wallin (late blight) DSV | 31.6 ± 13.4 | 0.4 ± 0.5 | **0.0 ± 0.0** |
+| % hours in achievable VPD band | 12.19 ± 1.14 | 3.17 ± 0.57 | 1.61 ± 0.56 |
+| Vent actuations | 180.0 ± 0.0 | 585.6 ± 53.8 | **132.0 ± 39.5** |
+| Fan (kWh) | 0.00 ± 0.00 | 323.5 ± 14.05 | 535.7 ± 2.74 |
+
+Predictive is not a strict win on every metric -- it scores *lowest* on "%
+hours in achievable VPD band" and costs more fan energy than Threshold. Both
+are stated plainly, with the reasoning, on the app's Headline Results and
+Controller Comparison pages (search "working as designed" and "what this
+costs to run").
+
+## Honest limitations (summary)
+
+1. The fan's leaf-wetness threshold mapping (90%→96% RH_in as fan_frac goes
+   0→1) is a modelling assumption, not a measured boundary-layer coefficient.
+2. Weather is ERA5 reanalysis on a ~9 km grid cell, not a Guwahati station
+   observation.
+3. The Wallin DSV late-blight model is temperate-climate-calibrated and
+   reads structurally low in Guwahati's monsoon regardless of controller --
+   retained specifically to show that mismatch, not as the climate-appropriate
+   signal (Alternaria was added for that reason).
+4. Irrigation demand (ETc) is computed from outdoor weather only, so no
+   vent/fan controller can differentiate water use from another rain-aware
+   one -- confirmed structurally, not a tuning gap.
+5. The crop calendar uses tomato's FAO-56 coefficients for both regimes, even
+   though tomato is a *rabi* (winter-sown) crop in Assam; Regime A should be
+   read as modelling off-season cultivation generally.
+
+Full derivation of each point, plus the V1-V8 physical-realism gate table,
+is on the app's **Validation & Limitations** page and in `CLAUDE.md`.
 
 ## What this models
 
-- **Weather**: real hourly Open-Meteo ERA5 reanalysis for Guwahati,
-  2025-03-01 to 2025-08-31 (`data/fetch_weather.py`).
+- **Weather**: real hourly Open-Meteo ERA5 reanalysis for Guwahati, 2021
+  through the latest complete day, one CSV per year (`data/fetch_weather.py`).
 - **Psychrometrics**: saturation vapour pressure, absolute humidity, VPD,
   dewpoint (`sim/psychro.py`).
 - **Reference evapotranspiration**: FAO-56 Penman-Monteith, hourly form
@@ -28,10 +96,12 @@ PyYAML dependency; see `sim/config.py`).
 - **Disease**: Wallin (1962) late-blight Disease Severity Value, as used in
   BLITECAST (`sim/disease.py`).
 - **Engine**: hourly simulation loop coupling all of the above, driven by
-  injected vent/irrigation policy callables so arbitrary controllers can be
-  compared against the same physical plant (`sim/engine.py`).
-
-Controllers are **not** part of this phase -- this is the plant only.
+  injected vent/irrigation/fan policy callables (`sim/engine.py`).
+- **Controllers**: Fixed (timer), Threshold (reactive bang-bang), and
+  Predictive (12-hour receding-horizon MPC over a joint vent+fan candidate
+  search) -- all in `controllers/`, all compared against the identical
+  physical plant above. See the Headline Results section above and the
+  app's Controller Comparison page.
 
 ## Equations
 
