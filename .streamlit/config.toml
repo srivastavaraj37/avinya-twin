@@ -1,15 +1,36 @@
-# Streamlit Community Cloud reads this at container start. Theme colors match
-# dashboard/app.py's dataviz reference palette (see its module-level color
-# constants) so the app chrome (buttons, sliders, links) doesn't clash with
-# the Plotly charts' own palette.
+# Streamlit Community Cloud reads this at container start. A deliberate,
+# considered dark theme -- warm near-black (not pure black), a single
+# confident deep-teal accent (agriculture/humidity, not a generic SaaS blue),
+# and Inter loaded from Google Fonts via Streamlit's native
+# "<font name>:<url>" font mechanism (no CSS @import needed, though the
+# injected CSS in dashboard/app.py also declares it as a belt-and-suspenders
+# fallback for elements the theme engine doesn't reach, e.g. Plotly text).
+#
+# Status colors are overridden so Streamlit's *native* red/green (error
+# boxes, negative/positive metric deltas) match the muted CRITICAL/GOOD hex
+# values dashboard/app.py already uses for its own Plotly charts and custom
+# HTML -- one palette throughout, not two. The default Streamlit red
+# (#ff4b4b) is never used anywhere in this app.
 
 [theme]
 base = "dark"
-primaryColor = "#3987e5"            # BLUE (dark-mode step) -- matches the dashboard's indoor/interactive series color
-backgroundColor = "#1a1a19"         # SURFACE (dark chart surface)
-secondaryBackgroundColor = "#2c2c2a"
-textColor = "#ffffff"               # TEXT_PRIMARY (dark)
-font = "sans serif"
+primaryColor = "#2F9E8F"
+backgroundColor = "#181917"
+secondaryBackgroundColor = "#20221E"
+textColor = "#E9EBE6"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+baseFontSize = 16
+baseRadius = "0.6rem"
+borderColor = "#33362F"
+dataframeBorderColor = "#33362F"
+dataframeHeaderBackgroundColor = "#20221E"
+showWidgetBorder = false
+showSidebarBorder = true
+linkColor = "#5FC2B2"
+codeBackgroundColor = "#20221E"
+metricValueFontWeight = 600
+redColor = "#d03b3b"
+greenColor = "#0ca30c"
 
 [server]
 headless = true

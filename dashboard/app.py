@@ -50,6 +50,7 @@ Parquet data (default) or calls sim.engine.run directly (live mode).
 from __future__ import annotations
 
 import json
+import math
 import sys
 import time
 import warnings
@@ -82,31 +83,38 @@ REGIME_LABELS: dict[str, str] = {"A": "Monsoon (Jun 1 - Aug 29)", "B": "Dry seas
 REGIME_KEY_FROM_LABEL: dict[str, str] = {v: k for k, v in REGIME_LABELS.items()}
 
 # --- Palette -----------------------------------------------------------------
-# avinya-twin's dataviz reference palette (see .claude skill "dataviz"),
-# used verbatim -- no eyeballed hex values. Colors map to *entities*, held
+# avinya-twin's dataviz reference palette, matched to .streamlit/config.toml's
+# theme (same warm-dark-neutral surfaces, same deep-teal accent) so the
+# Plotly charts and the custom Live Twin illustration read as part of the
+# same designed product as the Streamlit chrome around them, not a
+# default-theme app with charts bolted on. Colors map to *entities*, held
 # constant across every chart on a page:
 #   blue   -> indoor/controlled state (T_in, VPD, RH_in, vent) and controller
 #             slot 1 ("Fixed")
 #   orange -> outdoor reference (T_out) and controller slot 2 ("Threshold")
 #   aqua   -> water (irrigation) and controller slot 3 ("Predictive")
-#   red    -> status: thresholds / danger
-#   green  -> status: optimal / good
-# Dark-mode steps from the same documented reference palette (not eyeballed --
-# see .claude skill "dataviz" -> references/palette.md's dark column). Status
-# colors (CRITICAL, GOOD) are mode-invariant by design, same hex both modes.
+#   teal   -> the app's single confident accent (ACCENT) -- selected nav
+#             state, the lede box, headline card border, logo mark
+#   red    -> status: thresholds / danger (matches theme.redColor -- the
+#             default Streamlit red, #ff4b4b, is not used anywhere)
+#   green  -> status: optimal / good (matches theme.greenColor)
 BLUE = "#3987e5"
 ORANGE = "#d95926"
 AQUA = "#199e70"
 VIOLET = "#9085e9"
+ACCENT = "#2F9E8F"  # deep teal, matches .streamlit/config.toml's primaryColor
 CRITICAL = "#d03b3b"
 GOOD = "#0ca30c"
 FAN_COLOR = VIOLET  # circulation fan -- distinct from vent (blue), T_out (orange), irrigation (aqua)
-NEUTRAL_MID = "#383835"
-SURFACE = "#1a1a19"
-GRID = "#2c2c2a"
-AXIS = "#383835"
-TEXT_PRIMARY = "#ffffff"
-TEXT_SECONDARY = "#c3c2b7"
+NEUTRAL_MID = "#3a3d36"
+SURFACE = "#181917"  # matches theme.backgroundColor
+SECONDARY_SURFACE = "#20221E"  # matches theme.secondaryBackgroundColor -- card/hover-label fills
+GRID = "#2a2c26"  # faint horizontal gridlines only, see style_fig
+BORDER = "#33362F"  # matches theme.borderColor
+AXIS = BORDER
+TEXT_PRIMARY = "#E9EBE6"  # matches theme.textColor
+TEXT_SECONDARY = "#A6A99E"
+CHART_FONT_FAMILY = "'Inter', -apple-system, 'Segoe UI', sans-serif"
 SEQ_BLUE = [
     "#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7",
     "#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b",
@@ -189,6 +197,181 @@ HEADLINE_CARD_TEXT: dict[str, dict[str, str]] = {
 # installation's exact slab depends on total farm load, connection type,
 # and the 5% electricity duty/fixed charges layered on top).
 ELECTRICITY_RATE_INR_PER_KWH = 7.00
+
+REPO_URL = "https://github.com/srivastavaraj37/avinya-twin"
+
+# Simple geometric mark (a tunnel/arch with a small sensor dot) -- no emoji,
+# matches the Live Twin illustration's own arch motif so the sidebar and the
+# app's centrepiece visual read as the same product.
+LOGO_SVG = f"""<svg width="26" height="26" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M3 22 L3 14 A11 11 0 0 1 25 14 L25 22" stroke="{ACCENT}" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+  <line x1="1" y1="22" x2="27" y2="22" stroke="{ACCENT}" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="14" y1="14" x2="14" y2="6.5" stroke="{ACCENT}" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="14" cy="4.5" r="2.1" fill="{ACCENT}"/>
+</svg>"""
+
+# Sidebar nav, grouped into two labelled sections.
+NAV_SECTIONS: dict[str, list[str]] = {
+    "Results": ["Headline Results", "Why Ventilation Alone Fails", "Controller Comparison"],
+    "Explore": ["Live Simulation", "Live Twin", "Validation & Limitations", "Deployment & Cost", "For Growers"],
+}
+
+
+def inject_css() -> None:
+    """One CSS block, injected once per script run, that turns the default
+    Streamlit chrome into a considered product surface: a real type scale,
+    breathing room between sections, a constrained reading measure, bordered
+    metric cards, quieter dataframes, and softened callouts. Colors are
+    pulled from the same Python constants the Plotly charts use, so nothing
+    here can drift out of sync with the rest of the palette.
+    """
+    st.markdown(
+        f"""
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+        html, body, [class*="css"] {{
+            font-family: {CHART_FONT_FAMILY} !important;
+        }}
+
+        /* Constrained reading measure -- the single biggest readability fix */
+        .block-container {{
+            max-width: 1180px;
+            padding-top: 2.75rem;
+            padding-bottom: 4rem;
+        }}
+
+        /* Type scale: titles confident, sections subordinate, captions genuinely small */
+        h1 {{
+            font-size: 2.1rem !important;
+            font-weight: 700 !important;
+            letter-spacing: -0.02em !important;
+            margin-bottom: 0.3rem !important;
+        }}
+        h2 {{
+            font-size: 1.32rem !important;
+            font-weight: 600 !important;
+            letter-spacing: -0.01em !important;
+            margin-top: 2.6rem !important;
+            margin-bottom: 0.7rem !important;
+        }}
+        h3 {{
+            font-size: 1.06rem !important;
+            font-weight: 600 !important;
+            margin-top: 1.9rem !important;
+            margin-bottom: 0.5rem !important;
+        }}
+        p, li {{ font-size: 0.97rem; line-height: 1.65; }}
+        [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {{
+            font-size: 0.82rem !important;
+            color: {TEXT_SECONDARY} !important;
+            line-height: 1.55 !important;
+        }}
+
+        /* Vertical rhythm */
+        hr {{ margin: 2.2rem 0 !important; border-color: {BORDER} !important; opacity: 0.7; }}
+        [data-testid="stTabs"] {{ margin-top: 0.5rem; }}
+
+        /* Metric cards: bordered container, real padding, an intentional delta pill */
+        [data-testid="stMetric"] {{
+            background: {SECONDARY_SURFACE};
+            border: 1px solid {BORDER};
+            border-radius: 12px;
+            padding: 1.15rem 1.3rem 1rem;
+        }}
+        [data-testid="stMetricLabel"] {{
+            font-size: 0.84rem !important;
+            font-weight: 500 !important;
+            color: {TEXT_SECONDARY} !important;
+        }}
+        [data-testid="stMetricValue"] {{ letter-spacing: -0.01em; }}
+        [data-testid="stMetricDelta"] {{
+            font-size: 0.8rem !important;
+            font-weight: 600 !important;
+            padding: 0.18rem 0.55rem !important;
+            border-radius: 999px !important;
+            margin-top: 0.3rem !important;
+            background: color-mix(in srgb, currentColor 14%, transparent) !important;
+            width: fit-content;
+        }}
+
+        /* Dataframes: tighter header, quieter borders */
+        [data-testid="stDataFrame"] {{
+            border: 1px solid {BORDER} !important;
+            border-radius: 10px !important;
+            overflow: hidden;
+        }}
+
+        /* Callouts: a left accent rule and a soft tinted fill instead of a solid block */
+        [data-testid="stAlert"] {{
+            background: color-mix(in srgb, currentColor 9%, {SECONDARY_SURFACE}) !important;
+            border: none !important;
+            border-left: 3px solid currentColor !important;
+            border-radius: 8px !important;
+            padding: 0.95rem 1.15rem !important;
+        }}
+
+        /* Sidebar: product-navigation feel */
+        [data-testid="stSidebar"] {{ border-right: 1px solid {BORDER}; }}
+        [data-testid="stSidebar"] .stButton button {{
+            justify-content: flex-start !important;
+            font-weight: 500 !important;
+            border-color: transparent !important;
+            padding: 0.45rem 0.7rem !important;
+        }}
+        [data-testid="stSidebar"] .stButton button p {{ text-align: left !important; font-size: 0.92rem !important; }}
+        [data-testid="stSidebar"] .stButton button[kind="secondary"] {{ background: transparent !important; }}
+        [data-testid="stSidebar"] .stButton button[kind="secondary"]:hover {{
+            background: {SECONDARY_SURFACE} !important;
+        }}
+        .sidebar-nav-label {{
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: {TEXT_SECONDARY};
+            margin: 1.1rem 0 0.35rem 0.1rem;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_lede(text: str) -> None:
+    """A deliberate editorial lede -- not a default st.info block. Used once,
+    at the top of each Headline Results tab, so the single most important
+    sentence on the app's landing page reads with real visual weight.
+    """
+    st.markdown(
+        f"""
+        <div style="border-left: 4px solid {ACCENT};
+                    background: color-mix(in srgb, {ACCENT} 8%, {SECONDARY_SURFACE});
+                    padding: 1.15rem 1.5rem; border-radius: 8px;
+                    font-size: 1.08rem; line-height: 1.6; color: {TEXT_PRIMARY};">
+            {text}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_subordinate_note(text: str, accent_color: str) -> None:
+    """A quiet, secondary explanatory note -- deliberately smaller and less
+    visually assertive than render_lede or the headline metric cards, so it
+    reads as a caveat rather than competing with the headline numbers for
+    attention (used for the Water/-100% and fan-cost callouts).
+    """
+    st.markdown(
+        f"""
+        <div style="border-left: 2px solid {accent_color}; padding: 0.5rem 0.95rem;
+                    margin: 0.7rem 0 0.3rem; font-size: 0.85rem; line-height: 1.55;
+                    color: {TEXT_SECONDARY};">
+            {text}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # --- Precomputed data loading (default path -- no simulation, no network) ----
@@ -353,17 +536,32 @@ def summarize_controller(res: pd.DataFrame, vpd_low: float = 0.8, vpd_high: floa
 
 
 def style_fig(fig: go.Figure, height: int) -> go.Figure:
+    """One shared style applied to every Plotly figure in the app, so the
+    charts read as a designed set: no plot border, no vertical gridlines,
+    only faint horizontal ones; muted axis/legend text; a hover label that
+    matches the app's card surface instead of Plotly's default white box.
+    """
     fig.update_layout(
         height=height,
-        margin=dict(l=10, r=10, t=48, b=10),
+        margin=dict(l=8, r=8, t=44, b=8),
         plot_bgcolor=SURFACE,
         paper_bgcolor=SURFACE,
-        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=TEXT_PRIMARY, size=12),
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1),
+        font=dict(family=CHART_FONT_FAMILY, color=TEXT_PRIMARY, size=12.5),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+            font=dict(size=11.5, color=TEXT_SECONDARY), bgcolor="rgba(0,0,0,0)",
+        ),
+        hoverlabel=dict(
+            bgcolor=SECONDARY_SURFACE, bordercolor=BORDER,
+            font=dict(family=CHART_FONT_FAMILY, size=12, color=TEXT_PRIMARY),
+        ),
         hovermode="x unified",
     )
-    fig.update_xaxes(showgrid=True, gridcolor=GRID, linecolor=AXIS, showline=True)
-    fig.update_yaxes(showgrid=True, gridcolor=GRID, linecolor=AXIS, showline=True, zeroline=False)
+    fig.update_xaxes(showgrid=False, showline=False, zeroline=False, tickfont=dict(color=TEXT_SECONDARY, size=11))
+    fig.update_yaxes(
+        showgrid=True, gridcolor=GRID, gridwidth=1, showline=False, zeroline=False,
+        tickfont=dict(color=TEXT_SECONDARY, size=11),
+    )
     return fig
 
 
@@ -507,7 +705,7 @@ def render_headline_results() -> None:
             n_years = int(summary["n_years"].iloc[0]) if "n_years" in summary.columns else None
             night_narrow_pct = load_vent_authority()["frac_narrow_night"] * 100.0
 
-            st.info(build_plain_summary(regime_key, summary))
+            render_lede(build_plain_summary(regime_key, summary))
             if n_years:
                 st.caption(f"n = {n_years} simulated years, mean ± sd across years.")
 
@@ -524,24 +722,26 @@ def render_headline_results() -> None:
                 render_headline_metric_card(col, key, mpc_mean, mpc_sd, fixed_mean)
 
             if regime_key == "A":
-                st.warning(
-                    "**Why \"Water used\" shows a -100% change:** during the monsoon, rainfall already exceeds "
-                    "what the crop needs, so *any* rain-aware controller (Threshold or Predictive alike) "
-                    "irrigates zero -- this is a feature of the monsoon season, not evidence the predictive "
-                    "controller is smarter about water. Real, differentiated irrigation decisions happen in "
-                    f"the **{REGIME_LABELS['B']}** tab -- that's where the water number actually reflects "
-                    "controller behaviour."
+                render_subordinate_note(
+                    "<b>Why \"Water used\" shows a -100% change:</b> during the monsoon, rainfall already "
+                    "exceeds what the crop needs, so <i>any</i> rain-aware controller (Threshold or Predictive "
+                    "alike) irrigates zero -- this is a feature of the monsoon season, not evidence the "
+                    "predictive controller is smarter about water. Real, differentiated irrigation decisions "
+                    f"happen in the <b>{REGIME_LABELS['B']}</b> tab -- that's where the water number actually "
+                    "reflects controller behaviour.",
+                    accent_color=ORANGE,
                 )
 
             fan_mean = summary.loc["mpc", "fan_kWh_mean"]
             fan_cost = fan_mean * ELECTRICITY_RATE_INR_PER_KWH
-            st.info(
-                f"**What the leaf-wetness reduction costs to run:** the circulation fan is the actuator that "
-                f"buys the win above -- night-time ventilation alone can't reach dry-enough air (see "
-                "**Why Ventilation Alone Fails**). Running it uses real electricity: "
-                f"{fan_mean:,.0f} kWh over the season, about **₹{fan_cost:,.0f}** at Assam's APDCL tariff "
+            render_subordinate_note(
+                "<b>What the leaf-wetness reduction costs to run:</b> the circulation fan is the actuator that "
+                "buys the win above -- night-time ventilation alone can't reach dry-enough air (see "
+                "<b>Why Ventilation Alone Fails</b>). Running it uses real electricity: "
+                f"{fan_mean:,.0f} kWh over the season, about <b>₹{fan_cost:,.0f}</b> at Assam's APDCL tariff "
                 f"(~₹{ELECTRICITY_RATE_INR_PER_KWH:.0f}/unit) -- against ₹0 for the Fixed timer, which runs no "
-                "fan at all. The benefit above is real; so is this cost."
+                "fan at all. The benefit above is real; so is this cost.",
+                accent_color=FAN_COLOR,
             )
 
             st.subheader("Full comparison -- all controllers, all metrics")
@@ -1134,63 +1334,195 @@ def moisture_to_soil_color(pct: float) -> str:
     read as the pop and the *darkest* would nearly vanish into the
     background -- the opposite of what dry/pale vs. wet/rich soil should
     look like. Clamped to SEQ_BLUE[2..7] (pale to medium-strong blue) so
-    both ends stay visible against SURFACE=#1a1a19; the ramp's darkest
-    steps (8-12) are skipped entirely for this reason.
+    both ends stay visible against the app's dark surface; the ramp's
+    darkest steps (8-12) are skipped entirely for this reason.
     """
     t = max(0.0, min(100.0, pct)) / 100.0
     return _lerp_color(SEQ_BLUE[2], SEQ_BLUE[7], t)
 
 
-_DROPLET_POSITIONS = [(110, 118), (160, 100), (200, 112), (240, 98), (280, 116), (320, 104)]
+# --- Cross-section geometry ---------------------------------------------------
+# A schematic technical illustration, not a cartoon: recognisable Quonset-
+# tunnel profile (matches the geometry already assumed in config.yaml's
+# area_cover_m2 derivation -- see CLAUDE.md) with side posts, a curved
+# poly-film roof drawn with ribs, and a hinged ridge vent, instead of a flat
+# filled semicircle.
+_ARCH_CENTER_X = 210.0
+_ARCH_SPRING_Y = 175.0  # y where the roof film springs from the side posts
+_ARCH_RX = 155.0
+_ARCH_RY = 115.0
+_GROUND_Y = 205.0
+_POST_LEFT_X = 55.0
+_POST_RIGHT_X = 365.0
 
 
-def _droplet_svg(x: int, y: int) -> str:
+def _arch_point(theta_deg: float) -> tuple[float, float]:
+    """A point on the roof-film ellipse at angle theta_deg (180=left spring, 90=apex, 0=right spring)."""
+    theta = math.radians(theta_deg)
+    x = _ARCH_CENTER_X + _ARCH_RX * math.cos(theta)
+    y = _ARCH_SPRING_Y - _ARCH_RY * math.sin(theta)
+    return x, y
+
+
+def _droplet_svg(x: float, y: float, scale: float = 1.0) -> str:
+    """A droplet hanging from (x, y) -- used only along the roof film's inner
+    surface, which is physically where condensation actually forms.
+    """
+    w, h = 6.5 * scale, 11.5 * scale
     return (
-        f'<path d="M{x},{y - 12} C{x - 7},{y - 2} {x - 7},{y + 6} {x},{y + 8} '
-        f'C{x + 7},{y + 6} {x + 7},{y - 2} {x},{y - 12} Z" fill="{BLUE}" opacity="0.7"/>'
+        f'<path d="M{x},{y} C{x - w},{y + h * 0.55} {x - w},{y + h * 1.15} {x},{y + h * 1.3} '
+        f'C{x + w},{y + h * 1.15} {x + w},{y + h * 0.55} {x},{y} Z" fill="{BLUE}" opacity="0.75"/>'
     )
+
+
+def _crop_silhouette_svg(x: float, y: float, scale: float = 1.0) -> str:
+    """A restrained plant silhouette (stem + a few simple leaves) so the
+    scene reads as a growing space, not an empty enclosure. Decorative only
+    -- PLANT_COLOR is a fixed muted green, not one of the data-encoding
+    palette colors above.
+    """
+    plant_color = "#4f7a55"
+    stem_h = 15 * scale
+    return f"""
+    <g transform="translate({x},{y})" opacity="0.85">
+      <line x1="0" y1="0" x2="0" y2="-{stem_h}" stroke="{plant_color}" stroke-width="{1.6 * scale}" stroke-linecap="round"/>
+      <ellipse cx="-{5 * scale}" cy="-{stem_h * 0.65}" rx="{5.5 * scale}" ry="{2.6 * scale}" fill="{plant_color}" transform="rotate(-28 -{5 * scale} -{stem_h * 0.65})"/>
+      <ellipse cx="{5 * scale}" cy="-{stem_h * 0.85}" rx="{5.5 * scale}" ry="{2.6 * scale}" fill="{plant_color}" transform="rotate(28 {5 * scale} -{stem_h * 0.85})"/>
+      <ellipse cx="0" cy="-{stem_h * 1.05}" rx="{4.5 * scale}" ry="{2.2 * scale}" fill="{plant_color}" transform="rotate(0 0 -{stem_h * 1.05})"/>
+    </g>
+    """
 
 
 def svg_polyhouse(
     t_in: float, vent_frac: float, fan_frac: float, moisture_pct: float, leaf_wet: bool, ts: pd.Timestamp
 ) -> str:
+    """A schematic cross-section, restrained like a technical illustration:
+    Quonset profile with structural ribs, a hinged ridge vent that rotates
+    with vent_frac, a fan that visibly spins above fan_frac=0.5, condensation
+    on the roof film's *inner* surface when leaf_wet (physically where it
+    forms), soil coloured and textured by moisture, and a vertical air-volume
+    gradient instead of one flat temperature fill.
+    """
     cover_color = temp_to_cover_color(t_in)
     soil_color = moisture_to_soil_color(moisture_pct)
-    vent_angle = -5 - 55 * max(0.0, min(1.0, vent_frac))
-    droplets = "".join(_droplet_svg(x, y) for x, y in _DROPLET_POSITIONS) if leaf_wet else ""
+    vent_frac = max(0.0, min(1.0, vent_frac))
+    fan_on = fan_frac > 0.5
+
+    # Ridge vent: a hinged flap near the apex, closed = flush with the roof
+    # slope, opening lifts it up and outward as vent_frac rises.
+    hinge_x, hinge_y = 183.0, 66.0
+    vent_angle = -6.0 - 55.0 * vent_frac
+
+    # Structural ribs (purlins): straight members from the ground to three
+    # points along the roof film, suggesting real framing under the film.
+    ribs = "".join(
+        f'<line x1="{x1:.1f}" y1="{_GROUND_Y:.0f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+        f'stroke="{TEXT_PRIMARY}" stroke-width="1.3" opacity="0.3"/>'
+        for x1, (x2, y2) in (
+            (_POST_LEFT_X, _arch_point(150)),
+            (_ARCH_CENTER_X, _arch_point(90)),
+            (_POST_RIGHT_X, _arch_point(30)),
+        )
+    )
+
+    # Condensation droplets along the roof film's inner surface (a few
+    # points spread across the dome, offset slightly inward/down from the
+    # film itself), only when leaf_wet.
+    droplet_thetas = (145, 118, 96, 74, 52, 25)
+    droplets = ""
+    if leaf_wet:
+        droplets = "".join(
+            _droplet_svg(x, y + 5.0, scale=0.9 + 0.15 * (i % 2))
+            for i, (x, y) in enumerate(_arch_point(t) for t in droplet_thetas)
+        )
+
+    crops = "".join(
+        _crop_silhouette_svg(x, _GROUND_Y - 2, scale=1.05 - 0.08 * (i % 3))
+        for i, x in enumerate([95, 140, 185, 235, 280, 325])
+    )
+
     wet_badge = (
-        f'<span style="background:{CRITICAL};color:#fff;border-radius:4px;padding:2px 8px;'
-        f'font-size:12px;margin-left:8px;">leaf-wet</span>'
-        if leaf_wet else ""
+        f'<span class="twin-badge" style="background:{CRITICAL};">leaf-wet</span>' if leaf_wet else ""
     )
     fan_badge = (
-        f'<span style="background:{FAN_COLOR};color:#fff;border-radius:4px;padding:2px 8px;'
-        f'font-size:12px;margin-left:8px;">fan on</span>'
-        if fan_frac > 0.5 else ""
+        f'<span class="twin-badge" style="background:{FAN_COLOR};">fan on</span>' if fan_on else ""
     )
+
     return f"""
-    <div style="font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-                background:{SURFACE}; border:1px solid {GRID}; border-radius:8px; padding:12px;">
-      <svg viewBox="0 0 400 230" width="100%" height="260" style="display:block;">
-        <rect x="0" y="200" width="400" height="30" fill="#e6e1d0"/>
-        <rect x="20" y="212" width="360" height="18" rx="3" fill="{soil_color}"/>
-        <path d="M40,200 A160,150 0 0,1 360,200 Z" fill="{cover_color}" opacity="0.85"
-              stroke="{TEXT_SECONDARY}" stroke-width="2"/>
-        <g transform="translate(200,58) rotate({vent_angle:.1f})">
-          <rect x="-32" y="-4" width="64" height="8" rx="2" fill="{TEXT_PRIMARY}" opacity="0.4"/>
+    <div style="font-family:{CHART_FONT_FAMILY}; background:{SURFACE}; border:1px solid {BORDER};
+                border-radius:10px; padding:14px;">
+      <style>
+        @keyframes twin-fan-spin {{ from {{ transform: rotate(0deg); }} to {{ transform: rotate(360deg); }} }}
+        .twin-fan-on {{ transform-origin: {_POST_LEFT_X:.0f}px 150px; animation: twin-fan-spin 1.1s linear infinite; }}
+        .twin-badge {{
+          color: #fff; border-radius: 999px; padding: 2px 10px; font-size: 11.5px;
+          font-weight: 600; margin-left: 8px; letter-spacing: 0.01em;
+        }}
+      </style>
+      <svg viewBox="0 0 420 230" width="100%" height="250" style="display:block;">
+        <defs>
+          <linearGradient id="airGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="{cover_color}" stop-opacity="0.55"/>
+            <stop offset="100%" stop-color="{cover_color}" stop-opacity="0.10"/>
+          </linearGradient>
+          <pattern id="soilTexture" width="9" height="9" patternTransform="rotate(35)" patternUnits="userSpaceOnUse">
+            <line x1="0" y1="0" x2="0" y2="9" stroke="{SURFACE}" stroke-width="1.4" opacity="0.35"/>
+          </pattern>
+        </defs>
+
+        <!-- interior air volume, vertical temperature gradient -->
+        <path d="M{_POST_LEFT_X:.0f},{_GROUND_Y:.0f} L{_POST_LEFT_X:.0f},{_ARCH_SPRING_Y:.0f}
+                 A{_ARCH_RX:.0f},{_ARCH_RY:.0f} 0 0 1 {_POST_RIGHT_X:.0f},{_ARCH_SPRING_Y:.0f}
+                 L{_POST_RIGHT_X:.0f},{_GROUND_Y:.0f} Z" fill="url(#airGrad)"/>
+
+        {ribs}
+
+        <!-- roof film -->
+        <path d="M{_POST_LEFT_X:.0f},{_ARCH_SPRING_Y:.0f}
+                 A{_ARCH_RX:.0f},{_ARCH_RY:.0f} 0 0 1 {_POST_RIGHT_X:.0f},{_ARCH_SPRING_Y:.0f}"
+              fill="none" stroke="{TEXT_SECONDARY}" stroke-width="2.2"/>
+
+        <!-- side posts, with a small footing tick where each meets the ground -->
+        <line x1="{_POST_LEFT_X:.0f}" y1="{_ARCH_SPRING_Y:.0f}" x2="{_POST_LEFT_X:.0f}" y2="{_GROUND_Y:.0f}"
+              stroke="{TEXT_SECONDARY}" stroke-width="3.4"/>
+        <line x1="{_POST_LEFT_X - 8:.0f}" y1="{_GROUND_Y:.0f}" x2="{_POST_LEFT_X + 8:.0f}" y2="{_GROUND_Y:.0f}"
+              stroke="{TEXT_SECONDARY}" stroke-width="3.4" stroke-linecap="round"/>
+        <line x1="{_POST_RIGHT_X:.0f}" y1="{_ARCH_SPRING_Y:.0f}" x2="{_POST_RIGHT_X:.0f}" y2="{_GROUND_Y:.0f}"
+              stroke="{TEXT_SECONDARY}" stroke-width="3.4"/>
+        <line x1="{_POST_RIGHT_X - 8:.0f}" y1="{_GROUND_Y:.0f}" x2="{_POST_RIGHT_X + 8:.0f}" y2="{_GROUND_Y:.0f}"
+              stroke="{TEXT_SECONDARY}" stroke-width="3.4" stroke-linecap="round"/>
+
+        <!-- ridge vent, hinged flap -->
+        <g transform="translate({hinge_x:.0f},{hinge_y:.0f}) rotate({vent_angle:.1f})">
+          <rect x="0" y="-2.5" width="50" height="5" rx="1.5" fill="{TEXT_PRIMARY}" opacity="0.55"/>
         </g>
-        <circle cx="90" cy="170" r="14" fill="none" stroke="{FAN_COLOR}" stroke-width="3"
-                opacity="{0.9 if fan_frac > 0.5 else 0.25}"/>
-        <path d="M90,170 L90,158 M90,170 L100,177 M90,170 L80,177" stroke="{FAN_COLOR}" stroke-width="2.5"
-              opacity="{0.9 if fan_frac > 0.5 else 0.25}"/>
+        <circle cx="{hinge_x:.0f}" cy="{hinge_y:.0f}" r="2" fill="{TEXT_SECONDARY}"/>
+
+        <!-- ground + soil -->
+        <rect x="0" y="{_GROUND_Y:.0f}" width="420" height="25" fill="{soil_color}"/>
+        <rect x="0" y="{_GROUND_Y:.0f}" width="420" height="25" fill="url(#soilTexture)"/>
+        <line x1="0" y1="{_GROUND_Y:.0f}" x2="420" y2="{_GROUND_Y:.0f}" stroke="{BORDER}" stroke-width="1.5"/>
+
+        {crops}
+
+        <!-- fan, mounted on the left post -->
+        <circle cx="{_POST_LEFT_X:.0f}" cy="150" r="14.5" fill="{SURFACE}" stroke="{FAN_COLOR}" stroke-width="2"
+                opacity="{0.95 if fan_on else 0.55}"/>
+        <g class="{'twin-fan-on' if fan_on else ''}">
+          <path d="M{_POST_LEFT_X:.0f},150 L{_POST_LEFT_X:.0f},138.5 M{_POST_LEFT_X:.0f},150 L{_POST_LEFT_X + 10:.0f},156.5
+                   M{_POST_LEFT_X:.0f},150 L{_POST_LEFT_X - 10:.0f},156.5"
+                stroke="{FAN_COLOR}" stroke-width="2.4" stroke-linecap="round"
+                opacity="{0.95 if fan_on else 0.55}"/>
+        </g>
+
         {droplets}
       </svg>
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px;
-                  color:{TEXT_PRIMARY}; font-size:13px;">
-        <span>{ts:%Y-%m-%d %H:%M}</span>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;
+                  padding-top:8px; border-top:1px solid {BORDER}; color:{TEXT_PRIMARY}; font-size:13px;">
+        <span style="color:{TEXT_SECONDARY};">{ts:%Y-%m-%d %H:%M}</span>
         <span>
-          T_in <b>{t_in:.1f}°C</b> &nbsp;|&nbsp;
-          Vent <b>{vent_frac * 100:.0f}%</b> &nbsp;|&nbsp;
+          T_in <b>{t_in:.1f}°C</b> &nbsp;·&nbsp;
+          Vent <b>{vent_frac * 100:.0f}%</b> &nbsp;·&nbsp;
           Soil <b>{moisture_pct:.0f}%</b>
           {wet_badge}{fan_badge}
         </span>
@@ -1232,7 +1564,7 @@ def render_live_twin() -> None:
         moisture_pct=float(row["soil_pct"]),
         leaf_wet=bool(row["leaf_wet"]), ts=res.index[st.session_state.twin_idx],
     )
-    components.html(html, height=360)
+    components.html(html, height=380)
 
     col_play, col_slider = st.columns([1, 6])
     with col_play:
@@ -1534,42 +1866,75 @@ def render_for_growers() -> None:
 # --- App shell -------------------------------------------------------------------
 
 
-def main() -> None:
-    st.set_page_config(page_title="Avinya Twin", page_icon="\U0001f331", layout="wide")
+PAGE_RENDERERS = {
+    "Headline Results": render_headline_results,
+    "Why Ventilation Alone Fails": render_vent_authority,
+    "Controller Comparison": render_controller_comparison,
+    "Live Simulation": render_live_simulation,
+    "Live Twin": render_live_twin,
+    "Validation & Limitations": render_validation_limitations,
+    "Deployment & Cost": render_deployment_cost,
+    "For Growers": render_for_growers,
+}
 
-    pages = [
-        "Headline Results",
-        "Why Ventilation Alone Fails",
-        "Controller Comparison",
-        "Live Simulation",
-        "Live Twin",
-        "Validation & Limitations",
-        "Deployment & Cost",
-        "For Growers",
-    ]
+
+def render_sidebar_nav() -> str:
+    """Product-navigation sidebar: logo + title, two labelled sections
+    (Results / Explore), the active page rendered as a filled primary
+    button (a native, theme-consistent "selected" state -- not a CSS hack
+    on radio internals), and a footer with the project name and repo link.
+    """
+    st.session_state.setdefault("active_page", "Headline Results")
 
     with st.sidebar:
-        st.title("Avinya Twin")
+        st.markdown(
+            f"""
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:2px;">
+                {LOGO_SVG}
+                <span style="font-size:1.2rem; font-weight:700; letter-spacing:-0.01em; color:{TEXT_PRIMARY};">
+                    Avinya Twin
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         st.caption("Polyhouse digital twin -- Guwahati, Assam")
-        page = st.radio("Navigate", pages, index=0)
-        st.divider()
 
-    if page == "Headline Results":
-        render_headline_results()
-    elif page == "Why Ventilation Alone Fails":
-        render_vent_authority()
-    elif page == "Controller Comparison":
-        render_controller_comparison()
-    elif page == "Live Simulation":
-        render_live_simulation()
-    elif page == "Live Twin":
-        render_live_twin()
-    elif page == "Validation & Limitations":
-        render_validation_limitations()
-    elif page == "Deployment & Cost":
-        render_deployment_cost()
-    else:
-        render_for_growers()
+        for section_label, page_names in NAV_SECTIONS.items():
+            st.markdown(f'<div class="sidebar-nav-label">{section_label}</div>', unsafe_allow_html=True)
+            for page_name in page_names:
+                is_active = st.session_state.active_page == page_name
+                if st.button(
+                    page_name, key=f"nav_{page_name}", use_container_width=True,
+                    type="primary" if is_active else "secondary",
+                ):
+                    st.session_state.active_page = page_name
+                    st.rerun()
+
+        st.markdown(
+            f"""
+            <div style="margin-top:1.6rem; padding-top:0.9rem; border-top:1px solid {BORDER};
+                        font-size:0.78rem; color:{TEXT_SECONDARY}; line-height:1.6;">
+                <div style="font-weight:600; color:{TEXT_PRIMARY};">avinya-twin</div>
+                <div>Physics-based polyhouse controller comparison for Guwahati, Assam.</div>
+                <a href="{REPO_URL}" target="_blank" style="color:{ACCENT}; text-decoration:none;">
+                    View source on GitHub &rarr;
+                </a>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    return st.session_state.active_page
+
+
+def main() -> None:
+    st.set_page_config(
+        page_title="Avinya Twin", page_icon=str(REPO_ROOT / "dashboard" / "assets" / "favicon.png"), layout="wide"
+    )
+    inject_css()
+    page = render_sidebar_nav()
+    PAGE_RENDERERS[page]()
 
 
 if __name__ == "__main__":
