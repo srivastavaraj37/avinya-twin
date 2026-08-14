@@ -72,6 +72,7 @@ from bom_data import BOM, bom_total_inr  # noqa: E402
 from controllers.fixed import FixedController  # noqa: E402
 from controllers.mpc import MPCController  # noqa: E402
 from controllers.threshold import ThresholdController  # noqa: E402
+from sim.config import default_config  # noqa: E402
 from sim.engine import run  # noqa: E402
 
 RESULTS_DIR = REPO_ROOT / "results"
@@ -181,7 +182,7 @@ HEADLINE_CARD_TEXT: dict[str, dict[str, str]] = {
     },
     "leaf_wet_hours": {
         "card_label": "Hours with wet leaves",
-        "technical": "leaf-wet hours -- when fungus infects",
+        "technical": "leaf-wet hours: when fungus infects",
         "meaning": "Hours the leaves stayed wet enough for fungus to take hold. Fewer is better.",
     },
     "water_L_per_m2": {
@@ -713,7 +714,7 @@ def build_plain_summary(regime_key: str, summary: pd.DataFrame) -> str:
 
     if regime_key == "A" and alt_delta is not None:
         return (
-            f"In Assam's monsoon, the biggest threat to a polyhouse crop is not heat -- it is fungal disease "
+            f"In Assam's monsoon, the biggest threat to a polyhouse crop is not heat. It is fungal disease "
             f"from constant leaf wetness. Across {n_years} simulated seasons, the predictive controller cut "
             f"disease risk by {abs(alt_delta):.0f}% and hours with wet leaves by {abs(wet_delta):.0f}% compared "
             "to the timer schedule most growers run today."
@@ -751,7 +752,7 @@ def render_headline_results() -> None:
 
             st.subheader("Predictive controller vs. the Fixed timer most growers run today")
             st.caption(
-                "Fixed is the naive timer schedule -- what a smallholder actually runs today with no sensors. "
+                "Fixed is the naive timer schedule, what a smallholder actually runs today with no sensors. "
                 "That, not Threshold, is the comparison that matters."
             )
             cols = st.columns(3)
@@ -765,9 +766,9 @@ def render_headline_results() -> None:
                 render_subordinate_note(
                     "<b>Why \"Water used\" shows a -100% change:</b> during the monsoon, rainfall already "
                     "exceeds what the crop needs, so <i>any</i> rain-aware controller (Threshold or Predictive "
-                    "alike) irrigates zero -- this is a feature of the monsoon season, not evidence the "
+                    "alike) irrigates zero. This is a feature of the monsoon season, not evidence the "
                     "predictive controller is smarter about water. Real, differentiated irrigation decisions "
-                    f"happen in the <b>{REGIME_LABELS['B']}</b> tab -- that's where the water number actually "
+                    f"happen in the <b>{REGIME_LABELS['B']}</b> tab; that's where the water number actually "
                     "reflects controller behaviour.",
                     accent_color=ORANGE,
                 )
@@ -776,22 +777,22 @@ def render_headline_results() -> None:
             fan_cost = fan_mean * ELECTRICITY_RATE_INR_PER_KWH
             render_subordinate_note(
                 "<b>What the leaf-wetness reduction costs to run:</b> the circulation fan is the actuator that "
-                "buys the win above -- night-time ventilation alone can't reach dry-enough air (see "
+                "buys the win above. Night-time ventilation alone can't reach dry-enough air (see "
                 "<b>Why Ventilation Alone Fails</b>). Running it uses real electricity: "
                 f"{fan_mean:,.0f} kWh over the season, about <b>₹{fan_cost:,.0f}</b> at Assam's APDCL tariff "
-                f"(~₹{ELECTRICITY_RATE_INR_PER_KWH:.0f}/unit) -- against ₹0 for the Fixed timer, which runs no "
+                f"(~₹{ELECTRICITY_RATE_INR_PER_KWH:.0f}/unit), against ₹0 for the Fixed timer, which runs no "
                 "fan at all. The benefit above is real; so is this cost.",
                 accent_color=FAN_COLOR,
             )
 
-            st.subheader("Full comparison -- all controllers, all metrics")
+            st.subheader("Full comparison: all controllers, all metrics")
             table = build_regime_summary_table(summary)
             st.dataframe(
                 table, width="content", hide_index=True, column_config=regime_summary_column_config()
             )
             st.caption(
                 "Hover a column header for its technical name. **\"Ideal humidity %\"**: "
-                "Predictive scores lowest here on purpose -- its objective deliberately deprioritises that "
+                "Predictive scores lowest here on purpose. Its objective deliberately deprioritises that "
                 f"target in favour of leaf-wetness, because the target is unreachable for {night_narrow_pct:.1f}% "
                 "of monsoon night hours (see **Why Ventilation Alone Fails**). This is working as designed, "
                 "not an oversight."
@@ -815,11 +816,11 @@ def render_headline_results() -> None:
                 mpc_alt_sd = summary.loc["mpc", "alternaria_risk_std"]
                 st.caption(
                     f"**Disease risk error bars:** the Fixed baseline swings a lot year to year "
-                    f"({fixed_alt_mean:.1f} ± {fixed_alt_sd:.1f} -- the swing is "
+                    f"({fixed_alt_mean:.1f} ± {fixed_alt_sd:.1f}, a swing of "
                     f"{fixed_alt_sd / fixed_alt_mean * 100:.0f}% of the mean) because monsoon severity itself "
                     f"varies season to season. Predictive's error bar is tiny by comparison "
                     f"({mpc_alt_mean:.1f} ± {mpc_alt_sd:.1f}) because it holds disease risk near zero *every* "
-                    "season -- consistency is itself a result, not just the low average."
+                    "season. Consistency is itself a result, not just the low average."
                 )
 
 
@@ -958,6 +959,157 @@ def default_live_date_range(regime_key: str, min_date: date, max_date: date, spa
     return fallback_start, max_date
 
 
+# --- Rule-based decision explanation (deterministic template logic, no --------
+# model call, no network call -- see render_decision_explanation) ------------
+
+
+@st.cache_data(show_spinner=False)
+def raw_depletion_pct_threshold() -> float:
+    """Soil moisture (%, FAO-56 SoilBucket.moisture_pct convention: 100% =
+    field capacity, 0% = wilting point) at which depletion crosses the
+    readily-available-water threshold RAW = p * TAW -- the same condition
+    ThresholdController.irrigation_policy checks via soil.stressed. Read
+    from config.yaml's soil.p rather than hardcoded, so this stays correct
+    if that config value ever changes.
+    """
+    p = default_config()["soil"]["p"]
+    return 100.0 * (1.0 - p)
+
+
+def _wet_run_length_ending_at(res: pd.DataFrame, idx: int) -> int:
+    """Consecutive True hours in the leaf_wet column, counting backward from
+    (and including) idx.
+    """
+    wet = res["leaf_wet"].to_numpy()
+    n = 0
+    i = idx
+    while i >= 0 and wet[i]:
+        n += 1
+        i -= 1
+    return n
+
+
+def explain_controller_action(
+    res: pd.DataFrame, idx: int, controller_label: str, vpd_low: float, vpd_high: float, raw_pct: float,
+) -> list[str]:
+    """A short, deterministic, plain-language explanation of one hour's
+    controller decision, built entirely from state values already present
+    in `res` at (and immediately around) `idx`. No model call, no network
+    call -- template logic only, so the app's "runs offline on an ESP32"
+    claim stays true. Every number quoted below is read directly from the
+    simulated state for this hour; nothing here is invented or guessed.
+
+    Returns two lines: one for the climate actuators (vent + fan), one for
+    irrigation, since those are independent decisions. If a case doesn't
+    match any of the rules below, that is stated plainly (with the raw
+    state values) rather than forcing a guess.
+    """
+    row = res.iloc[idx]
+    ts = res.index[idx]
+    vent, fan, irrigation = float(row["vent"]), float(row["fan"]), float(row["irrigation"])
+    t_in, t_out, rh_in, vpd = float(row["T_in"]), float(row["T_out"]), float(row["RH_in"]), float(row["VPD"])
+    leaf_wet = bool(row["leaf_wet"])
+    soil_pct = float(row["soil_pct"])
+    rain_next_6h = float(res["rain"].iloc[idx + 1 : idx + 7].sum())
+    wet_run = _wet_run_length_ending_at(res, idx)
+
+    lines: list[str] = []
+
+    # --- Climate actuators (vent + fan) ---
+    if controller_label == "Fixed":
+        fixed = FixedController()
+        in_day_window = fixed.day_start_hour <= ts.hour < fixed.day_end_hour
+        window_label = f"{fixed.day_start_hour:02d}:00-{fixed.day_end_hour:02d}:00 day window" if in_day_window else "night window"
+        lines.append(
+            f"Fixed runs a preset clock schedule, not a reaction to conditions. This hour ({ts:%H:%M}) falls "
+            f"in the {window_label}, so vent was set to {vent * 100:.0f}% regardless of indoor state "
+            f"(T_in {t_in:.1f}°C, RH_in {rh_in:.1f}%). Fan stays off; Fixed has no fan logic at all."
+        )
+    elif leaf_wet and wet_run >= 3 and (fan >= 0.5 or vent >= 0.5):
+        actuators = []
+        if fan >= 0.5:
+            actuators.append(f"fan at {fan * 100:.0f}%")
+        if vent >= 0.5:
+            actuators.append(f"vent at {vent * 100:.0f}%")
+        lines.append(
+            f"Leaves have been wet for {wet_run} consecutive hour{'s' if wet_run != 1 else ''} "
+            f"(RH_in {rh_in:.1f}%), so {' and '.join(actuators)} to try to break the wet spell."
+        )
+    elif vent >= 0.5 and t_in > t_out:
+        lines.append(
+            f"Vent opened to {vent * 100:.0f}% for cooling: indoor temperature ({t_in:.1f}°C) was running "
+            f"above outdoor ({t_out:.1f}°C)."
+        )
+    elif vent <= 0.25 and fan < 0.5:
+        in_band = vpd_low <= vpd <= vpd_high
+        lines.append(
+            f"No climate action needed this hour: vent stayed near baseline ({vent * 100:.0f}%), fan off, "
+            f"T_in {t_in:.1f}°C, RH_in {rh_in:.1f}%, VPD {vpd:.2f} kPa "
+            f"({'inside' if in_band else 'outside'} the {vpd_low:.1f}-{vpd_high:.1f} kPa target band)."
+        )
+    else:
+        lines.append(
+            f"No rule above matched this hour's climate state plainly, so here are the raw values instead of "
+            f"a guess: vent {vent * 100:.0f}%, fan {fan * 100:.0f}%, T_in {t_in:.1f}°C, T_out {t_out:.1f}°C, "
+            f"RH_in {rh_in:.1f}%, VPD {vpd:.2f} kPa, leaf-wet {leaf_wet}."
+        )
+
+    # --- Irrigation (independent of the climate actuators) ---
+    if irrigation > 0:
+        lines.append(
+            f"Irrigation applied ({irrigation:.1f}mm): soil moisture had dropped to {soil_pct:.0f}%, at or "
+            f"below the readily-available-water threshold ({raw_pct:.0f}%)."
+        )
+    elif soil_pct <= raw_pct and rain_next_6h > 0:
+        lines.append(
+            f"Irrigation skipped even though soil moisture was at {soil_pct:.0f}% (at or below the "
+            f"{raw_pct:.0f}% threshold): {rain_next_6h:.1f}mm of rain is in the record for the next 6 hours, "
+            "so the controller let the rain do the work instead."
+        )
+    elif controller_label == "Fixed":
+        fixed = FixedController()
+        dosed = ts.hour in fixed.irrigation_hours
+        hours_str = " and ".join(f"{h:02d}:00" for h in fixed.irrigation_hours)
+        lines.append(
+            f"Fixed's irrigation is clock-only, at {hours_str} every day regardless of soil moisture or rain. "
+            f"This hour {'is one of those two doses' if dosed else 'is not a scheduled dose hour'}."
+        )
+    else:
+        lines.append(
+            f"No irrigation needed: soil moisture was {soil_pct:.0f}%, above the readily-available-water "
+            f"threshold ({raw_pct:.0f}%)."
+        )
+
+    return lines
+
+
+def render_decision_explanation(res: pd.DataFrame, controller_label: str, vpd_low: float, vpd_high: float) -> None:
+    """Lets a judge pick any simulated hour and see, in plain language, why
+    the selected controller made the vent/fan/irrigation call it made that
+    hour. Deliberately labelled so it cannot be mistaken for an AI feature:
+    this is deterministic template logic reading the controller's own
+    already-computed state, not a model call and not a network request.
+    """
+    st.subheader("Why the controller did this (rule-based, no network call)")
+    st.caption(
+        "Pick an hour below. The explanation is generated by deterministic template logic reading the "
+        "simulated state for that hour, the same state shown in the chart above. No LLM, no external API "
+        "call. This is what keeps the \"runs offline on an ESP32\" claim on Deployment & Cost honest."
+    )
+
+    n = len(res)
+    wet_hours = res["leaf_wet"].to_numpy()
+    default_idx = int(wet_hours.argmax()) if wet_hours.any() else 0
+    idx = st.slider(
+        "Hour to explain", min_value=0, max_value=n - 1, value=min(default_idx, n - 1), key="explain_hour_idx",
+    )
+    st.caption(f"Selected hour: {res.index[idx]:%Y-%m-%d %H:%M}")
+
+    raw_pct = raw_depletion_pct_threshold()
+    for line in explain_controller_action(res, idx, controller_label, vpd_low, vpd_high, raw_pct):
+        st.write(f"- {line}")
+
+
 def render_live_simulation() -> None:
     st.title("Live Simulation")
     st.caption("Inspect one controller's physics hour by hour.")
@@ -967,7 +1119,7 @@ def render_live_simulation() -> None:
         live_mode = st.toggle(
             "Run live simulation (slow)", value=False,
             help="Off (default): read precomputed results instantly. On: actually run the "
-                 "physics for a date range you choose -- the Predictive (MPC) controller can "
+                 "physics for a date range you choose. The Predictive (MPC) controller can "
                  "take 2-4 minutes per 90-day window.",
         )
 
@@ -995,7 +1147,7 @@ def render_live_simulation() -> None:
             )
             controller_label = st.selectbox("Controller", CONTROLLER_LABELS, index=0)
             crop_stage = st.selectbox("Crop stage", list(CROP_STAGE_VPD_BAND), index=2)
-            st.caption("Crop stage sets the VPD band used for the metric/shading above -- an assumed "
+            st.caption("Crop stage sets the VPD band used for the metric/shading above: an assumed "
                        "horticultural mapping, not a physics coupling (Kc still follows FAO-56 calendar days).")
             run_clicked = st.button("Run simulation", type="primary", use_container_width=True)
         else:
@@ -1005,9 +1157,9 @@ def render_live_simulation() -> None:
             year = st.selectbox("Year", years, index=len(years) - 1)
             controller_label = st.selectbox("Controller", CONTROLLER_LABELS, index=0)
             crop_stage = st.selectbox("Crop stage", list(CROP_STAGE_VPD_BAND), index=2)
-            st.caption("Crop stage sets the VPD band used for the metric/shading above -- an assumed "
+            st.caption("Crop stage sets the VPD band used for the metric/shading above: an assumed "
                        "horticultural mapping, not a physics coupling (Kc still follows FAO-56 calendar days).")
-            st.caption("Reading precomputed results -- instant, updates as you change a control above.")
+            st.caption("Reading precomputed results: instant, updates as you change a control above.")
 
     vpd_low, vpd_high = CROP_STAGE_VPD_BAND[crop_stage]
 
@@ -1015,7 +1167,7 @@ def render_live_simulation() -> None:
         if run_clicked:
             start_date, end_date = date_range if isinstance(date_range, tuple) and len(date_range) == 2 else (date_range, date_range)
             if start_date > end_date:
-                st.error(f"Start date ({start_date}) is after end date ({end_date}) -- pick a valid range.")
+                st.error(f"Start date ({start_date}) is after end date ({end_date}). Pick a valid range.")
                 return
             start_str, end_str = f"{start_date} 00:00:00", f"{end_date} 23:00:00"
             weather = load_weather_live()
@@ -1023,7 +1175,7 @@ def render_live_simulation() -> None:
             if n_hours_available == 0:
                 st.error(
                     f"No cached weather data for {start_date} to {end_date}. The cache covers "
-                    f"{weather.index.min().date()} to {weather.index.max().date()} -- pick a range inside that."
+                    f"{weather.index.min().date()} to {weather.index.max().date()}. Pick a range inside that."
                 )
                 return
             with st.spinner("Running simulation..."):
@@ -1037,10 +1189,12 @@ def render_live_simulation() -> None:
             st.info("Configure controls in the sidebar and click **Run simulation**.")
             return
         _render_result(result["res"], result["baseline"], vpd_low, vpd_high, result["controller_label"] == "Fixed")
+        render_decision_explanation(result["res"], result["controller_label"], vpd_low, vpd_high)
     else:
         res = slice_precomputed(CONTROLLER_KEY[controller_label], regime_key, year)
         baseline = slice_precomputed("fixed", regime_key, year)
         _render_result(res, baseline, vpd_low, vpd_high, controller_label == "Fixed")
+        render_decision_explanation(res, controller_label, vpd_low, vpd_high)
 
 
 # --- Page: Why Ventilation Alone Fails ------------------------------------------
@@ -1071,14 +1225,14 @@ def build_vpd_envelope_figure(envelope: pd.DataFrame) -> go.Figure:
 
 def render_vent_authority() -> None:
     st.title("Why Ventilation Alone Fails")
-    st.caption("The central engineering finding of this project -- computed by scripts/diagnose_vent_authority.py.")
+    st.caption("The central engineering finding of this project, computed by scripts/diagnose_vent_authority.py.")
 
     data = load_vent_authority()
 
     st.markdown(
         f"**During JJA monsoon nights, {data['frac_narrow_night'] * 100:.1f}% of hours have less than "
         f"{data['narrow_range_threshold_kpa']:.1f} kPa of achievable VPD range between vents fully closed and "
-        "fully open -- no vent setting, however clever the controller, can reach the 0.8-1.2 kPa target during "
+        "fully open. No vent setting, however clever the controller, can reach the 0.8-1.2 kPa target during "
         "those hours, because outdoor air is itself already almost saturated.**"
     )
 
@@ -1105,7 +1259,7 @@ def render_vent_authority() -> None:
     envelope = load_vent_authority_envelope()
     st.plotly_chart(build_vpd_envelope_figure(envelope), use_container_width=True)
     st.caption(
-        f"{data['envelope_week_start']}..{data['envelope_week_end']} -- the same week validated in "
+        f"{data['envelope_week_start']}..{data['envelope_week_end']}, the same week validated in "
         "figures/validation.png. The shaded band is every VPD value reachable by *some* vent_frac between 0 "
         "and 1 at that hour (fan off, vent=0 to vent=1 boundary runs); the 0.8-1.2 kPa target sits visibly "
         "outside the reachable envelope for most night hours."
@@ -1115,12 +1269,12 @@ def render_vent_authority() -> None:
     st.write(
         "Ventilation works by exchanging indoor air for outdoor air. During JJA monsoon nights, outdoor RH is "
         "already 85-95%, so opening the vents swaps saturated indoor air for near-saturated outdoor air and "
-        "barely moves indoor VPD -- the mechanism above. A horizontal-airflow (HAF) circulation fan does not "
-        "exchange air with outside at all: it thins the still boundary layer of air resting on the leaf "
-        "surface (Stanghellini 1987; Monteith & Unsworth boundary-layer-resistance theory), which raises the "
-        "*local* condensation threshold even while *bulk* indoor RH stays high. That gives the controller real "
-        "authority over leaf-wetness during exactly the hours -- monsoon nights -- where ventilation alone has "
-        "essentially none."
+        "barely moves indoor VPD, the mechanism described above. A horizontal-airflow (HAF) circulation fan "
+        "does not exchange air with outside at all: it thins the still boundary layer of air resting on the "
+        "leaf surface (Stanghellini 1987; Monteith & Unsworth boundary-layer-resistance theory), which raises "
+        "the *local* condensation threshold even while *bulk* indoor RH stays high. That gives the controller "
+        "real authority over leaf-wetness during exactly the hours that matter most, monsoon nights, where "
+        "ventilation alone has essentially none."
     )
 
 
@@ -1198,7 +1352,7 @@ def build_failure_figure(
     fig = make_subplots(
         rows=n, cols=1, shared_xaxes=False, vertical_spacing=0.14,
         subplot_titles=[
-            f"{e['timestamp']:%Y-%m-%d %H:%M} -- {driver_label} applied {e['driver_dose_mm']:.0f}mm, "
+            f"{e['timestamp']:%Y-%m-%d %H:%M}: {driver_label} applied {e['driver_dose_mm']:.0f}mm, "
             f"then {e['rain_next_6h_mm']:.1f}mm rain fell within {window_hours // 3}h; "
             f"{comparator_label} applied {e['comparator_dose_same_hour_mm']:.0f}mm at the same hour"
             for e in events
@@ -1257,7 +1411,7 @@ def style_vs_fixed(df: pd.DataFrame, baseline_label: str = "Fixed") -> "pd.io.fo
 
 def render_controller_comparison() -> None:
     st.title("Controller Comparison")
-    st.caption("Fixed, Threshold, and Predictive (MPC) over a chosen regime and year -- reading precomputed results.")
+    st.caption("Fixed, Threshold, and Predictive (MPC) over a chosen regime and year, reading precomputed results.")
 
     with st.sidebar:
         st.subheader("Controller Comparison controls")
@@ -1296,13 +1450,13 @@ def render_controller_comparison() -> None:
         "Vent movements": ("vent actuations", 120),
     }
     summary_df.columns = list(COMPARISON_COLUMN_META.keys())
-    st.subheader(f"Comparison table -- {regime_label}, {year}")
+    st.subheader(f"Comparison table: {regime_label}, {year}")
     st.caption(
-        "Colour is relative to the **Fixed** row (green = better, red = worse) -- every metric here is "
-        "lower-is-better, so this reads as a comparison against the naive baseline, not three separate columns. "
-        "Hover a column header for its technical name. Fan movements (actuation count) is omitted from this "
-        "view to keep every column readable without scrolling -- the full number is in "
-        "results/precomputed/."
+        "Colour is relative to the **Fixed** row (green = better, red = worse). Every metric here is "
+        "lower-is-better, so this reads as a comparison against the naive baseline, not seven separate columns. "
+        "Hover a column header for its technical name. This table shows vent movements (vent actuation count) "
+        "but leaves out fan movements (fan actuation count) to keep every column readable without scrolling; "
+        "the full number is in results/precomputed/."
     )
     st.dataframe(
         style_vs_fixed(summary_df).format({
@@ -1318,7 +1472,7 @@ def render_controller_comparison() -> None:
         },
     )
     st.caption(
-        "**\"Ideal humidity %\":** Predictive scores lowest here on purpose -- night-time "
+        "**\"Ideal humidity %\":** Predictive scores lowest here on purpose. Night-time "
         "ventilation can't reach that target for most monsoon nights, so the controller deliberately spends "
         "its effort on leaf-wetness instead (see **Why Ventilation Alone Fails**). Working as designed."
     )
@@ -1332,19 +1486,19 @@ def render_controller_comparison() -> None:
     if regime_key == "A":
         st.caption(
             "Threshold and Predictive both flatten at zero here because monsoon rainfall already exceeds crop "
-            "water demand, so any rain-aware controller irrigates nothing -- not because Predictive is "
+            "water demand, so any rain-aware controller irrigates nothing. That is not because Predictive is "
             "cleverer about water. Switch the sidebar to **Dry season** to see irrigation decisions that "
             "actually differ between controllers."
         )
 
     with st.expander("Case study: irrigating right before rain (a caveat, not a headline)", expanded=False):
         st.caption(
-            "Always shown for **Regime B (dry season)**, regardless of the regime selected above -- "
+            "Always shown for **Regime B (dry season)**, regardless of the regime selected above, "
             "not Regime A. Per CLAUDE.md, the reactive Threshold controller applies zero irrigation "
             "across the *entire* Regime A monsoon window (soil never becomes stressed, so it never "
             "makes an irrigation decision at all), so an earlier version of this chart fell back to "
             "the naive Fixed timer there and captioned it as \"Predictive skipped irrigation ahead of "
-            "rain\" -- misleading, since Predictive wasn't predicting anything in that regime, it "
+            "rain\". That was misleading, since Predictive wasn't predicting anything in that regime; it "
             "also just never irrigates. Regime B is where Threshold (and Predictive) make real, "
             "differentiated irrigation decisions, so it's the only regime where this comparison means "
             "what it claims to mean."
@@ -1369,18 +1523,18 @@ def render_controller_comparison() -> None:
             st.info(
                 f"**No qualifying failure moments found in Regime B, {failure_year}** (Threshold made "
                 f"{total_irrigation_events} real irrigation decisions this year, driven by soil "
-                "depletion -- unlike Regime A, where it never irrigates at all -- but none happened to "
+                "depletion, unlike Regime A, where it never irrigates at all, but none happened to "
                 "land within 6 hours of 3mm+ rain). Checked across every available Regime B year "
                 f"({', '.join(str(y) for y in all_years_checked)}): zero qualifying events in any of "
                 "them. In this dry-season regime, rain is infrequent enough that the specific "
                 "'irrigated right before a downpour' coincidence this check looks for essentially "
-                "doesn't occur -- a real absence, not a search-parameter artifact. Showing no chart "
-                "here rather than one that would imply otherwise."
+                "does not occur. That is a real absence, not a search-parameter artifact, so this shows "
+                "no chart here rather than one that would imply otherwise."
             )
         else:
             st.caption(
                 f"Regime B, {failure_year}. Hours where Threshold irrigated and 3mm+ of rain fell "
-                "within the next 6 hours -- water that was about to arrive for free. Overlaid against "
+                "within the next 6 hours: water that was about to arrive for free. Overlaid against "
                 "what Predictive did at the same hour."
             )
             events_df = pd.DataFrame(events).rename(columns={
@@ -1710,7 +1864,7 @@ def render_validation_limitations() -> None:
     gate_data = load_gate_results()
     st.caption(
         f"7-day passive-policy run, {gate_data['window_start']}..{gate_data['window_end']}, vent fixed at 0.3, "
-        "no irrigation -- results/gate_results.json, written by scripts/validate.py."
+        "no irrigation. Written to results/gate_results.json by scripts/validate.py."
     )
     gates_df = build_gate_table(gate_data)
     st.dataframe(style_gate_table(gates_df), use_container_width=True, hide_index=True)
@@ -1730,13 +1884,13 @@ def render_validation_limitations() -> None:
 
     st.divider()
     st.header("Honest limitations")
-    st.caption("All already documented in CLAUDE.md -- surfaced here plainly, not softened.")
+    st.caption("All already documented in CLAUDE.md, surfaced here plainly, not softened.")
 
     st.subheader("1. The fan's leaf-wetness threshold mapping is a modelling assumption, not a measurement")
     st.write(
         "The fan raises the RH_in threshold used for `leaf_wet` from 90% (fan off) to 96% (fan at full power) "
         "to represent it thinning the leaf boundary layer. No boundary-layer transfer coefficient was fit to "
-        "real HAF-fan data for this project -- 96% was chosen as a plausible ceiling, not derived from a cited "
+        "real HAF-fan data for this project: 96% was chosen as a plausible ceiling, not derived from a cited "
         "source. The qualitative result (fans measurably raise the condensation-onset RH) is real and cited; "
         "the exact 96% figure is not."
     )
@@ -1749,7 +1903,7 @@ def render_validation_limitations() -> None:
     st.dataframe(sens_df, use_container_width=True, hide_index=True)
     st.caption(
         "Leaf-wet hours swing >4x (1249 -> 277) and Alternaria risk swings from 7 units to 0 across this "
-        "range -- this assumption materially changes both disease-model outputs, not just a minor detail."
+        "range: this assumption materially changes both disease-model outputs, not just a minor detail."
     )
 
     st.subheader("2. Weather is ERA5 reanalysis, not a Guwahati station observation")
@@ -1757,34 +1911,34 @@ def render_validation_limitations() -> None:
         "All weather in this project comes from Open-Meteo's archive API, which serves ERA5-based reanalysis "
         "on a roughly 9 km grid cell, not a measurement taken at a Guwahati weather station. That is suitable "
         "for the climate-scale patterns this project studies (monsoon humidity regime, day/night cycles, "
-        "multi-year variability) but is not a substitute for site-specific microclimate calibration -- a real "
+        "multi-year variability) but is not a substitute for site-specific microclimate calibration. A real "
         "deployment should validate against a local sensor before trusting absolute thresholds."
     )
 
     st.subheader("3. Wallin/BLITECAST DSV does not fit Guwahati's monsoon climate")
     st.write(
-        "The Wallin (1962) late-blight table is calibrated for temperate climates -- its favourable "
+        "The Wallin (1962) late-blight table is calibrated for temperate climates: its favourable "
         "temperature band tops out at 26.6°C. Guwahati's JJA monsoon mean ambient is 28.7°C, already above "
         "that ceiling most days before any polyhouse warming is added, which is why cumulative Wallin DSV "
         "reads structurally low here regardless of controller. This is exactly why the Alternaria solani "
-        "(early blight) model was added alongside it -- Wallin is retained specifically to show this "
+        "(early blight) model was added alongside it. Wallin is retained specifically to show this "
         "mismatch, not as the climate-appropriate disease signal."
     )
 
     st.subheader("4. Water use is structurally tied between Threshold and Predictive")
     st.write(
         "ETc (and therefore the soil water balance driving irrigation decisions) is computed from **outdoor** "
-        "weather only -- it has no dependency on indoor climate or which vent/fan controller is running. Both "
+        "weather only. It has no dependency on indoor climate or which vent/fan controller is running. Both "
         "Threshold's and Predictive's irrigation policies reduce to the same soil-depletion-plus-rain-skip "
         "rule acting on the same outdoor-driven soil trajectory, so no vent/fan strategy can differentiate "
-        "water use from another rain-aware controller -- confirmed in Regime B, where both land on identical "
-        "121.0 ± 11.4 L/m² water use, to the decimal."
+        "water use from another rain-aware controller. This is confirmed in Regime B, where both land on "
+        "identical 121.0 ± 11.4 L/m² water use, to the decimal."
     )
 
     st.subheader("5. The crop calendar uses tomato Kc for both regimes")
     st.write(
         "FAO-56 tomato crop coefficients drive ETc in both Regime A and Regime B, but tomato is actually a "
-        "*rabi* (winter-sown) crop in Assam -- it isn't normally grown through the monsoon at all. Regime A's "
+        "*rabi* (winter-sown) crop in Assam; it isn't normally grown through the monsoon at all. Regime A's "
         "results should be read as modelling **off-season cultivation generally** (whatever crop occupies a "
         "monsoon-season polyhouse, using tomato's water/growth calendar as a stand-in), not literally "
         "monsoon-season tomato."
@@ -1798,7 +1952,7 @@ def render_deployment_cost() -> None:
     st.title("Deployment & Cost")
     st.caption(
         "Hardware retrofit budget for one existing 100 m² polyhouse. Every price is a real single-unit Indian "
-        "retail listing (see Source column), researched August 2026 -- not invented. See dashboard/bom_data.py "
+        "retail listing (see Source column), researched August 2026, not invented. See dashboard/bom_data.py "
         "for full sourcing notes."
     )
 
@@ -1829,30 +1983,30 @@ def render_deployment_cost() -> None:
     st.metric("Total hardware cost per polyhouse", f"₹{total_inr:,.0f}")
     st.caption(
         "Excludes wiring/mounting hardware, labour, and GST where the source listing didn't state "
-        "GST-inclusive -- an order-of-magnitude retrofit budget, not a quote. The HAF fan line uses a small "
-        "circulation-fan analog (18-inch, ~125W class) rather than a large industrial greenhouse exhaust fan "
-        "(1.5HP+ listings run ₹18,000-25,000, a different product class than config.yaml's fan spec models)."
+        "GST-inclusive: this is an order-of-magnitude retrofit budget, not a quote. The HAF fan line uses a "
+        "small circulation-fan analog (18-inch, ~125W class) rather than a large industrial greenhouse exhaust "
+        "fan (1.5HP+ listings run ₹18,000-25,000, a different product class than config.yaml's fan spec models)."
     )
 
     st.divider()
     st.header("What follows from this architecture")
     st.markdown(
         "- **Runs on the edge.** Every controller (Fixed, Threshold, Predictive) is plain Python control logic "
-        "small enough to run on an ESP32-class microcontroller -- no cloud inference, no GPU, no external API "
+        "small enough to run on an ESP32-class microcontroller: no cloud inference, no GPU, no external API "
         "call in the control loop itself.\n"
         "- **Deterministic and needs no network connection.** Fixed and Threshold are pure rule-based logic; "
         "Predictive plans on a 12-hour receding horizon (replanned every hour) using locally-available "
-        "weather. None of the three controllers requires internet connectivity to keep operating -- a real "
+        "weather. None of the three controllers requires internet connectivity to keep operating, a real "
         "advantage for rural polyhouse sites with unreliable connectivity.\n"
         "- **Retrofits onto existing structures.** The BOM above bolts onto an existing polyhouse (sensors, "
-        "an actuator on the existing vent, two fans, a solenoid on the existing irrigation line) -- it does "
+        "an actuator on the existing vent, two fans, a solenoid on the existing irrigation line); it does "
         "not require building a new structure."
     )
 
     st.divider()
     st.header("Scale-up projection")
     st.caption(
-        "A transparent linear projection, not a fixed claim -- move the slider and the numbers below update "
+        "A transparent linear projection, not a fixed claim. Move the slider and the numbers below update "
         "with it, so the assumption stays visible rather than hidden inside a single quoted figure."
     )
     n_units = st.slider("Number of polyhouses (N)", min_value=1, max_value=500, value=50, step=1)
@@ -1884,7 +2038,7 @@ def render_deployment_cost() -> None:
     st.caption(
         f"N × (Predictive − Fixed) from the Headline Results table for {REGIME_LABELS[proj_regime_key]}, "
         "× 100 m² floor area per house for water. Does not model shared infrastructure, water-source limits, "
-        "maintenance, or interaction effects across units -- a simple per-unit multiplication, shown with the "
+        "maintenance, or interaction effects across units: a simple per-unit multiplication, shown with the "
         "slider specifically so the assumption stays visible rather than becoming a single unverifiable claim."
     )
 
@@ -1900,17 +2054,17 @@ def render_deployment_cost() -> None:
 
 def render_for_growers() -> None:
     st.title("For Growers")
-    st.caption("Plain language, no jargon, no equations -- what this means for someone running a polyhouse.")
+    st.caption("Plain language, no jargon, no equations: what this means for someone running a polyhouse.")
 
     st.header("The problem, in two sentences")
     st.write(
-        "In Assam's monsoon, a polyhouse's real enemy isn't heat -- it's humidity. When leaves stay wet for "
+        "In Assam's monsoon, a polyhouse's real enemy isn't heat. It's humidity. When leaves stay wet for "
         "hours at a stretch, fungal disease takes hold, and a grower running the vents on a fixed clock has "
         "no way to know when that's happening or to do anything about it."
     )
 
     st.header("What the system physically is")
-    st.write("A small kit that bolts onto an existing polyhouse -- it does not require building anything new:")
+    st.write("A small kit that bolts onto an existing polyhouse. It does not require building anything new:")
     st.markdown(
         "- Sensors that read temperature, humidity, sunlight, and soil moisture\n"
         "- A motor that opens and closes the roof vent\n"
@@ -1924,10 +2078,10 @@ def render_for_growers() -> None:
     st.header("What it does differently from a timer")
     st.write(
         "A timer opens the vents at the same two clock times every day, no matter what the weather is "
-        "actually doing. This system instead looks up to 12 hours ahead at the weather, and -- the important "
-        "part -- runs the fans specifically at night, when opening the vents alone can't dry the air but "
-        "fungus is most likely to infect the leaves. It waters the crop only when the soil actually needs it, "
-        "and skips watering if rain is already on the way."
+        "actually doing. This system instead looks up to 12 hours ahead at the weather and runs the fans "
+        "specifically at night: that's when opening the vents alone can't dry the air, but fungus is most "
+        "likely to infect the leaves. It waters the crop only when the soil actually needs it, and skips "
+        "watering if rain is already on the way."
     )
 
     st.header("What a grower gets")
@@ -1944,18 +2098,18 @@ def render_for_growers() -> None:
     cols[1].caption("monsoon season, vs. a timer")
     if water_delta_b is not None:
         cols[2].metric("Less water wasted", f"{abs(water_delta_b):.0f}% less")
-        cols[2].caption("dry season, vs. a timer -- see below for why monsoon water isn't the story")
+        cols[2].caption("dry season, vs. a timer: see below for why monsoon water isn't the story")
     st.caption(
         "Water savings are shown for the **dry season**, not the monsoon: during the monsoon, rain alone "
-        "already covers what the crop needs, so the monsoon water number doesn't say much about the system -- "
-        "the dry season is where its irrigation decisions actually matter."
+        "already covers what the crop needs, so the monsoon water number doesn't say much about the system. "
+        "The dry season is where its irrigation decisions actually matter."
     )
 
     st.header("What it costs to run")
     fan_mean = summary_a.loc["mpc", "fan_kWh_mean"]
     fan_cost = fan_mean * ELECTRICITY_RATE_INR_PER_KWH
     st.write(
-        f"Running the fans uses about {fan_mean:,.0f} units of electricity over a monsoon season -- roughly "
+        f"Running the fans uses about {fan_mean:,.0f} units of electricity over a monsoon season, roughly "
         f"**₹{fan_cost:,.0f}** at Assam's APDCL electricity rate (~₹{ELECTRICITY_RATE_INR_PER_KWH:.0f} per "
         "unit). That's the real running cost behind the disease-risk reduction above; it isn't free, and this "
         "project doesn't pretend it is."
@@ -1965,7 +2119,7 @@ def render_for_growers() -> None:
     st.warning(
         "This system does **not** directly increase yield. What it does is reduce disease risk and cut "
         "wasted water. Whether healthier, less-stressed plants also produce more or better fruit is likely, "
-        "but it is **not something this project measured** -- we are not claiming a yield number here."
+        "but it is **not something this project measured**, so we are not claiming a yield number here."
     )
 
 
@@ -1998,13 +2152,13 @@ def render_sidebar_nav() -> str:
             <div style="display:flex; align-items:center; gap:10px; margin-bottom:2px;">
                 {LOGO_SVG}
                 <span style="font-size:1.2rem; font-weight:700; letter-spacing:-0.01em; color:{TEXT_PRIMARY};">
-                    Avinya Twin
+                    Monsoon Twin
                 </span>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        st.caption("Polyhouse digital twin -- Guwahati, Assam")
+        st.caption("Polyhouse digital twin, Guwahati, Assam")
 
         for section_label, page_names in NAV_SECTIONS.items():
             st.markdown(f'<div class="sidebar-nav-label">{section_label}</div>', unsafe_allow_html=True)
@@ -2021,7 +2175,7 @@ def render_sidebar_nav() -> str:
             f"""
             <div style="margin-top:1.6rem; padding-top:0.9rem; border-top:1px solid {BORDER};
                         font-size:0.78rem; color:{TEXT_SECONDARY}; line-height:1.6;">
-                <div style="font-weight:600; color:{TEXT_PRIMARY};">avinya-twin</div>
+                <div style="font-weight:600; color:{TEXT_PRIMARY};">Monsoon Twin</div>
                 <div>Physics-based polyhouse controller comparison for Guwahati, Assam.</div>
                 <a href="{REPO_URL}" target="_blank" style="color:{ACCENT}; text-decoration:none;">
                     View source on GitHub &rarr;
@@ -2036,7 +2190,7 @@ def render_sidebar_nav() -> str:
 
 def main() -> None:
     st.set_page_config(
-        page_title="Avinya Twin", page_icon=str(REPO_ROOT / "dashboard" / "assets" / "favicon.png"), layout="wide"
+        page_title="Monsoon Twin", page_icon=str(REPO_ROOT / "dashboard" / "assets" / "favicon.png"), layout="wide"
     )
     inject_css()
     page = render_sidebar_nav()
