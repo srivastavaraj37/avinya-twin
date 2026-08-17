@@ -10,8 +10,10 @@ Eight pages, selected from the sidebar, in narrative order:
                                   a chosen regime and year.
     Live Simulation           -- inspect one controller over a regime/year
                                   window, hour by hour.
-    Live Twin                 -- an animated cross-section that scrubs
-                                  through a run hour by hour.
+    Live Twin                 -- an interactive canvas operator console that
+                                  plays/scrubs a precomputed run hour by hour
+                                  (dashboard/live_twin.py; static-SVG fallback
+                                  behind TWIN_CANVAS_ENABLED).
     Validation & Limitations  -- V1-V8 gate table + every honest limitation,
                                   kept fully technical (this page is for a
                                   technical reviewer, not simplified).
@@ -68,6 +70,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "data"))
 sys.path.insert(0, str(REPO_ROOT / "dashboard"))
 
+import live_twin  # noqa: E402
 from bom_data import BOM, bom_total_inr  # noqa: E402
 from controllers.fixed import FixedController  # noqa: E402
 from controllers.mpc import MPCController  # noqa: E402
@@ -121,6 +124,35 @@ SEQ_BLUE = [
     "#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7",
     "#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b",
 ]
+
+# --- Live Twin canvas viewer -------------------------------------------------
+# Feature flag. True renders the interactive canvas console (dashboard/live_twin.py);
+# False renders the original static SVG cross-section kept below in
+# svg_polyhouse/_render_live_twin_svg. The canvas component also falls back to
+# that same SVG at runtime if its script fails to initialise, so the page
+# cannot show an empty box either way.
+TWIN_CANVAS_ENABLED = True
+
+# Scene-only colors the canvas viewer needs on top of the data palette above.
+# These encode *materials*, not data series, so they deliberately sit outside
+# the entity-color convention documented for BLUE/ORANGE/AQUA: soil is brown
+# because wet soil is brown, not because brown means anything in a chart.
+SOIL_DRY = "#7d6949"
+SOIL_WET = "#3a2f1f"
+PLANT_DARK = "#3f6446"
+PLANT_LIGHT = "#6a9668"
+FILM_COLOR = "#dfe6dc"
+FRAME_COLOR = "#b9bdb2"
+GROUND_COLOR = "#22241e"
+SKY_NIGHT = "#101210"
+SKY_NIGHT_LOW = "#171a15"
+SKY_DAY = "#2b3029"
+SKY_DAY_LOW = "#3a4034"
+SUN_COLOR = "#d8c98a"
+MOON_COLOR = "#9fb0bd"
+RAIN_COLOR = "#9db6c9"
+DROP_COLOR = "#cfe0ef"
+APERTURE_COLOR = "#0b0d0a"
 
 CONTROLLER_LABELS = ["Fixed", "Threshold", "Predictive"]
 CONTROLLER_KEY = {"Fixed": "fixed", "Threshold": "threshold", "Predictive": "mpc"}
@@ -1778,21 +1810,22 @@ def svg_polyhouse(
     """
 
 
-def render_live_twin() -> None:
-    st.title("Live Twin")
-    st.caption("Animated polyhouse cross-section, scrubbed through a precomputed run.")
+def _svg_for_row(res: pd.DataFrame, idx: int) -> str:
+    row = res.iloc[idx]
+    return svg_polyhouse(
+        t_in=float(row["T_in"]), vent_frac=float(row["vent"]), fan_frac=float(row["fan"]),
+        moisture_pct=float(row["soil_pct"]),
+        leaf_wet=bool(row["leaf_wet"]), ts=res.index[idx],
+    )
 
-    with st.sidebar:
-        st.subheader("Live Twin controls")
-        regime_label = st.selectbox("Regime", list(REGIME_LABELS.values()), index=0, key="twin_regime")
-        regime_key = REGIME_KEY_FROM_LABEL[regime_label]
-        years = available_precomputed_years(regime_key)
-        year = st.selectbox("Year", years, index=len(years) - 1, key="twin_year")
-        controller_label = st.selectbox("Controller", CONTROLLER_LABELS, index=0, key="twin_controller")
-        speed = st.selectbox("Hours per frame (play speed)", [1, 3, 6, 12, 24], index=2, key="twin_speed")
 
-    res = slice_precomputed(CONTROLLER_KEY[controller_label], regime_key, year)
+def _render_live_twin_svg(res: pd.DataFrame) -> None:
+    """The original static-SVG Live Twin, kept as the fallback path behind
+    TWIN_CANVAS_ENABLED (and reachable if the canvas payload cannot be built).
+    Server-driven playback: each frame is one Streamlit rerun.
+    """
     n = len(res)
+    speed = st.session_state.get("twin_svg_speed", 6)
 
     st.session_state.setdefault("twin_idx", 0)
     st.session_state.setdefault("twin_playing", False)
@@ -1805,27 +1838,114 @@ def render_live_twin() -> None:
     if st.session_state.twin_playing:
         st.session_state.twin_idx = (st.session_state.twin_idx + speed) % n
 
-    row = res.iloc[st.session_state.twin_idx]
-    html = svg_polyhouse(
-        t_in=float(row["T_in"]), vent_frac=float(row["vent"]), fan_frac=float(row["fan"]),
-        moisture_pct=float(row["soil_pct"]),
-        leaf_wet=bool(row["leaf_wet"]), ts=res.index[st.session_state.twin_idx],
-    )
-    components.html(html, height=380)
+    components.html(_svg_for_row(res, st.session_state.twin_idx), height=380)
 
     col_play, col_slider = st.columns([1, 6])
     with col_play:
         st.session_state.twin_playing = st.toggle("Play", value=st.session_state.twin_playing)
     with col_slider:
-        st.slider(
-            "Scrub through the run",
-            0, n - 1, key="twin_idx",
-            format=f"hour %d of {n}",
-        )
+        st.slider("Scrub through the run", 0, n - 1, key="twin_idx", format=f"hour %d of {n}")
 
     if st.session_state.twin_playing:
         time.sleep(0.35)
         st.rerun()
+
+
+@st.cache_data(show_spinner=False)
+def build_twin_payload_json(
+    res: pd.DataFrame, controller_label: str, regime_label: str, year: int, vpd_low: float, vpd_high: float
+) -> str:
+    """Serialise one cached run for the canvas viewer.
+
+    Cached because the per-hour reason strings come from
+    explain_controller_action, which is cheap per call but runs once per hour
+    of the window. The explanation layer is passed in rather than reimplemented
+    so the actuator tiles quote exactly the same text the Live Simulation page
+    shows for the same hour.
+    """
+    payload = live_twin.build_twin_payload(
+        res,
+        controller_label=controller_label,
+        regime_label=regime_label,
+        year=year,
+        explain_fn=explain_controller_action,
+        vpd_low=vpd_low,
+        vpd_high=vpd_high,
+        raw_pct=raw_depletion_pct_threshold(),
+        rh_wet_min=float(default_config()["fan"]["rh_wet_threshold_min"]),
+    )
+    return live_twin.payload_json(payload)
+
+
+def twin_palette() -> dict[str, str]:
+    """Every color and the font stack the canvas viewer draws with, taken from
+    this module's palette constants so the component cannot drift out of sync
+    with the Plotly charts or the Streamlit theme around it.
+    """
+    return {
+        "surface": SURFACE, "surface2": SECONDARY_SURFACE, "border": BORDER, "grid": GRID,
+        "text": TEXT_PRIMARY, "muted": TEXT_SECONDARY, "accent": ACCENT,
+        "blue": BLUE, "orange": ORANGE, "aqua": AQUA, "violet": FAN_COLOR,
+        "critical": CRITICAL, "good": GOOD, "neutralMid": NEUTRAL_MID, "hot": "#e66767",
+        "soilDry": SOIL_DRY, "soilWet": SOIL_WET,
+        "plantDark": PLANT_DARK, "plantLight": PLANT_LIGHT,
+        "film": FILM_COLOR, "frame": FRAME_COLOR, "ground": GROUND_COLOR,
+        "skyNight": SKY_NIGHT, "skyNightLow": SKY_NIGHT_LOW,
+        "skyDay": SKY_DAY, "skyDayLow": SKY_DAY_LOW,
+        "sun": SUN_COLOR, "moon": MOON_COLOR, "rain": RAIN_COLOR, "drop": DROP_COLOR,
+        "aperture": APERTURE_COLOR,
+        "font": CHART_FONT_FAMILY,
+    }
+
+
+def render_live_twin() -> None:
+    st.title("Live Twin")
+    st.caption("Operator console view of one precomputed run, hour by hour.")
+
+    with st.sidebar:
+        st.subheader("Live Twin controls")
+        regime_label = st.selectbox("Regime", list(REGIME_LABELS.values()), index=0, key="twin_regime")
+        regime_key = REGIME_KEY_FROM_LABEL[regime_label]
+        years = available_precomputed_years(regime_key)
+        year = st.selectbox("Year", years, index=len(years) - 1, key="twin_year")
+        controller_label = st.selectbox("Controller", CONTROLLER_LABELS, index=0, key="twin_controller")
+        st.caption(
+            "Play, speed, scrub and hour stepping live inside the panel itself, so nothing here "
+            "reruns the app while it animates."
+        )
+
+    res = slice_precomputed(CONTROLLER_KEY[controller_label], regime_key, year)
+
+    # Mid-season VPD band, the same default summarize_controller uses. It only
+    # affects the wording of the rule-based reason lines, which quote whether
+    # this hour's VPD sits inside the target band.
+    vpd_low, vpd_high = CROP_STAGE_VPD_BAND["Mid-season"]
+
+    if TWIN_CANVAS_ENABLED:
+        try:
+            payload_js = build_twin_payload_json(
+                res, controller_label, regime_label, int(year), vpd_low, vpd_high
+            )
+            html = live_twin.build_component_html(payload_js, twin_palette(), _svg_for_row(res, 0))
+        except Exception as exc:  # noqa: BLE001 - the page must still render something
+            st.warning(f"Interactive viewer could not be prepared ({exc}). Showing the static cross section.")
+            _render_live_twin_svg(res)
+        else:
+            components.html(html, height=live_twin.COMPONENT_HEIGHT, scrolling=False)
+            st.caption(
+                "The geometry is schematic: a representative tunnel shape, not a scale drawing of a "
+                "specific structure. Every state value shown, including the sensor readings, the "
+                "actuator settings and the reason lines, is read from the precomputed run for the "
+                "selected regime, year and controller. This panel is a viewer over that record, not a "
+                "live controller: nothing you do here changes a simulated value."
+            )
+    else:
+        _render_live_twin_svg(res)
+        st.caption(
+            "The geometry is schematic, not a scale drawing. Every state value comes from the "
+            "precomputed run for the selected regime, year and controller. This panel is a viewer "
+            "over that record, not a live controller."
+        )
 
 
 # --- Page: Model Validation & Honest Limitations --------------------------------
