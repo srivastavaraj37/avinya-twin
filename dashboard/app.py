@@ -551,8 +551,26 @@ def load_forecast_weather() -> tuple[pd.DataFrame | None, str | None]:
     if "forecast_weather_df" in st.session_state:
         return st.session_state.forecast_weather_df, st.session_state.get("forecast_fetch_error")
 
+    sys.path.insert(0, str(REPO_ROOT))
     sys.path.insert(0, str(REPO_ROOT / "data"))
-    from fetch_weather import fetch_open_meteo_forecast
+    # Force a fresh read of fetch_weather.py rather than reusing whatever is
+    # already cached in sys.modules. Streamlit Cloud's "Updated app!" hot
+    # update pulls new code onto disk without necessarily restarting the
+    # Python process, so a fetch_weather module already imported earlier in
+    # this process's lifetime (e.g. by load_weather_live, which every page
+    # load touches) can still be the *pre-update* module object -- missing
+    # a function this file added later -- even though the file on disk is
+    # current. This is what caused "ImportError: cannot import name
+    # 'fetch_open_meteo_forecast' from 'fetch_weather'" on the deployed app
+    # while working fine locally, where the process is restarted every run.
+    sys.modules.pop("fetch_weather", None)
+    try:
+        from fetch_weather import fetch_open_meteo_forecast
+    except ImportError as exc:
+        error = f"Forecast unavailable: {exc}"
+        st.session_state.forecast_weather_df = None
+        st.session_state.forecast_fetch_error = error
+        return None, error
 
     cfg = default_config()
     try:
@@ -589,7 +607,7 @@ def run_window_live(controller_key: str, start: str, end: str) -> pd.DataFrame:
     explicit "Run live simulation (slow)" toggle.
     """
     weather = load_weather_live()
-    window = weather[(weather.index >= start) & (weather.index <= end)]
+    window = weather[_datetime_range_mask(weather.index, start, end)]
     ctrl = _make_controller(controller_key, window)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
@@ -1025,15 +1043,56 @@ def _render_result(res: pd.DataFrame, baseline: pd.DataFrame, vpd_low: float, vp
     st.plotly_chart(build_live_figure(res, vpd_low, vpd_high), use_container_width=True)
 
 
-def live_range_hours_available(weather: pd.DataFrame, start_date: date, end_date: date) -> int:
-    """Hours of cached weather within [start_date, end_date] inclusive.
+def _coerce_datetime_index(index: pd.Index) -> pd.DatetimeIndex:
+    """Best-effort coercion to a real DatetimeIndex.
+
+    Comparing a DatetimeIndex against a bare Python string leans on pandas'
+    internal string-to-Timestamp parsing, which is not stable across pandas
+    versions: this exact pattern (``weather.index >= "2023-08-05 00:00:00"``)
+    ran fine on the pandas version in local dev's venv but crashed the
+    deployed app on Streamlit Cloud's pandas 3.0 with "TypeError: Invalid
+    comparison between dtype=datetime64[us] and str". Every date-range
+    filter in this module goes through this helper plus
+    ``_datetime_range_mask`` below and compares explicit pd.Timestamp
+    objects instead, so it no longer depends on that internal codepath.
+    """
+    if isinstance(index, pd.DatetimeIndex):
+        return index
+    return pd.DatetimeIndex(index)
+
+
+def _datetime_range_mask(index: pd.Index, start: "date | pd.Timestamp", end: "date | pd.Timestamp") -> pd.Series:
+    """Boolean mask for rows within [start, end] inclusive, comparing
+    explicit pd.Timestamp objects (tz-matched to the index) rather than a
+    bare string -- see _coerce_datetime_index for why.
+    """
+    dt_index = _coerce_datetime_index(index)
+    start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
+    if dt_index.tz is not None:
+        if start_ts.tzinfo is None:
+            start_ts = start_ts.tz_localize(dt_index.tz)
+        if end_ts.tzinfo is None:
+            end_ts = end_ts.tz_localize(dt_index.tz)
+    return (dt_index >= start_ts) & (dt_index <= end_ts)
+
+
+def live_range_hours_available(weather: pd.DataFrame, start_date: date, end_date: date) -> int | None:
+    """Hours of cached weather within [start_date, end_date] inclusive, or
+    None if the comparison itself couldn't be performed for any reason.
 
     Shared by the proactive Date range validation (disables Run before a
-    click) and the defensive check inside the Run handler, so both read the
-    same definition of "has data" rather than two copies drifting apart.
+    click) and the defensive check inside the Run handler. None must be
+    treated as "unknown," never as zero: a broken *validation* check is not
+    a reason to disable Run and strand the page -- that would turn a
+    cosmetic UX feature into a page-crashing one, which is exactly what
+    happened on Streamlit Cloud (see _coerce_datetime_index).
     """
-    start_str, end_str = f"{start_date} 00:00:00", f"{end_date} 23:00:00"
-    return int(((weather.index >= start_str) & (weather.index <= end_str)).sum())
+    try:
+        end_ts = pd.Timestamp(end_date) + pd.Timedelta(hours=23)
+        mask = _datetime_range_mask(weather.index, pd.Timestamp(start_date), end_ts)
+        return int(mask.sum())
+    except Exception:
+        return None
 
 
 def default_live_date_range(regime_key: str, min_date: date, max_date: date, span_days: int = 13) -> tuple[date, date]:
@@ -1261,12 +1320,7 @@ def render_live_simulation() -> None:
             # toggle flips on -- before the date range, controller, or Run
             # button are even reached -- so it's seen before it can be
             # triggered, not after.
-            st.warning(
-                "**Live mode simulates on demand.** Fixed/Threshold finish in a few seconds; "
-                "**Predictive (MPC) can take 2-4 minutes** for a 90-day window (a joint "
-                "vent+fan candidate search re-run every simulated hour). Avoid long ranges "
-                "with Predictive on a shared server."
-            )
+            st.warning("**Predictive (MPC) can take 2-4 minutes** for a 90-day window.")
             regime_label = st.selectbox("Regime", list(REGIME_LABELS.values()), index=0, key="live_regime")
             regime_key = REGIME_KEY_FROM_LABEL[regime_label]
             weather = load_weather_live()
@@ -1293,11 +1347,19 @@ def render_live_simulation() -> None:
                 range_valid = False
                 st.warning(f"Start date ({start_date}) is after end date ({end_date}). Pick a valid range.")
             else:
-                range_valid = live_range_hours_available(weather, start_date, end_date) > 0
-                if not range_valid:
-                    st.warning(
-                        f"Selected range has no cached weather. Available: {min_date} to {max_date}."
-                    )
+                hours_available = live_range_hours_available(weather, start_date, end_date)
+                if hours_available is None:
+                    # Couldn't validate (see live_range_hours_available's
+                    # docstring) -- treat as valid rather than blocking Run;
+                    # the defensive check in the Run handler below still
+                    # guards the actual simulation call.
+                    range_valid = True
+                else:
+                    range_valid = hours_available > 0
+                    if not range_valid:
+                        st.warning(
+                            f"Selected range has no cached weather. Available: {min_date} to {max_date}."
+                        )
             controller_label = st.selectbox("Controller", CONTROLLER_LABELS, index=0)
             crop_stage = st.selectbox("Crop stage", list(CROP_STAGE_VPD_BAND), index=2)
             st.caption("Crop stage sets the VPD band used for the metric/shading above: an assumed "
@@ -1327,9 +1389,16 @@ def render_live_simulation() -> None:
                     "to browse the app's regular cached results instead."
                 )
                 return
-            with st.spinner("Running simulation on the live forecast..."):
-                res = run_window_forecast(CONTROLLER_KEY[controller_label], forecast_df)
-                baseline = run_window_forecast("fixed", forecast_df)
+            try:
+                with st.spinner("Running simulation on the live forecast..."):
+                    res = run_window_forecast(CONTROLLER_KEY[controller_label], forecast_df)
+                    baseline = run_window_forecast("fixed", forecast_df)
+            except Exception as exc:  # never let an unexpected failure crash the page
+                st.error(
+                    f"Live-forecast simulation failed ({exc}). Turn off \"Use live forecast\" "
+                    "to browse the app's regular cached results instead."
+                )
+                return
             st.session_state.forecast_run_result = {
                 "res": res, "baseline": baseline, "controller_label": controller_label,
             }
@@ -1353,9 +1422,13 @@ def render_live_simulation() -> None:
                 )
                 return
             start_str, end_str = f"{start_date} 00:00:00", f"{end_date} 23:00:00"
-            with st.spinner("Running simulation..."):
-                res = run_window_live(CONTROLLER_KEY[controller_label], start_str, end_str)
-                baseline = run_window_live("fixed", start_str, end_str)
+            try:
+                with st.spinner("Running simulation..."):
+                    res = run_window_live(CONTROLLER_KEY[controller_label], start_str, end_str)
+                    baseline = run_window_live("fixed", start_str, end_str)
+            except Exception as exc:  # never let an unexpected failure crash the page
+                st.error(f"Simulation failed ({exc}). Try a different date range or controller.")
+                return
             st.session_state.page1_live_result = {
                 "res": res, "baseline": baseline, "controller_label": controller_label,
             }
