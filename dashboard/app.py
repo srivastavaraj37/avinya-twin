@@ -526,13 +526,50 @@ def load_weather_live() -> pd.DataFrame:
     """Multi-year weather from local cache (data/guwahati_<year>.csv) --
     only imported/called from the live-mode branch of Live Simulation, never
     at module import or on a default (precomputed) page render. Reads local
-    files only; the network-fetching function (fetch_weather.fetch_weather)
-    is never called by this app either way.
+    files only -- never touches the network. (Forecast mode, below, is the
+    one exception in this app that does call the network; it is entirely
+    separate from this function and from the cached multi-year record this
+    reads.)
     """
     sys.path.insert(0, str(REPO_ROOT / "data"))
     from fetch_weather import load_multi_year_weather
 
     return load_multi_year_weather()
+
+
+def load_forecast_weather() -> tuple[pd.DataFrame | None, str | None]:
+    """Fetch the live Open-Meteo forecast (opt-in, Live Simulation's
+    "Use live forecast" toggle only), cached in session state so a page
+    rerun (widget interaction, etc.) never re-hits the network -- only an
+    explicit "Refresh forecast" click clears the cached copy.
+
+    Returns (dataframe, None) on success or (None, error message) on any
+    failure (network, timeout, malformed response) -- never raises, so a
+    forecast outage can never crash the page; callers fall back to the
+    app's regular cached-data modes instead.
+    """
+    if "forecast_weather_df" in st.session_state:
+        return st.session_state.forecast_weather_df, st.session_state.get("forecast_fetch_error")
+
+    sys.path.insert(0, str(REPO_ROOT / "data"))
+    from fetch_weather import fetch_open_meteo_forecast
+
+    cfg = default_config()
+    try:
+        df = fetch_open_meteo_forecast(
+            latitude=cfg["location"]["latitude"],
+            longitude=cfg["location"]["longitude"],
+            timezone=cfg["location"]["timezone"],
+            forecast_days=12,
+        )
+    except Exception as exc:  # network/timeout/parse failure -- fall back, never crash
+        st.session_state.forecast_weather_df = None
+        st.session_state.forecast_fetch_error = str(exc)
+        return None, str(exc)
+
+    st.session_state.forecast_weather_df = df
+    st.session_state.forecast_fetch_error = None
+    return df, None
 
 
 def _make_controller(key: str, window: pd.DataFrame):
@@ -558,6 +595,22 @@ def run_window_live(controller_key: str, start: str, end: str) -> pd.DataFrame:
         warnings.simplefilter("ignore", RuntimeWarning)
         res = run(window, ctrl.vent_policy, ctrl.irrigation_policy, ctrl.fan_policy, show_progress=False)
     res["T_out"] = window["T_out"].to_numpy()
+    return res
+
+
+def run_window_forecast(controller_key: str, forecast_df: pd.DataFrame) -> pd.DataFrame:
+    """Same physics as run_window_live, over an already-fetched live-forecast
+    window instead of the cached historical record -- sim.engine.run and the
+    controllers themselves are identical either way, only the weather source
+    differs. Not cached (@st.cache_data) since forecast_df changes every
+    fetch; the forecast fetch itself is what's session-cached, in
+    load_forecast_weather above.
+    """
+    ctrl = _make_controller(controller_key, forecast_df)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        res = run(forecast_df, ctrl.vent_policy, ctrl.irrigation_policy, ctrl.fan_policy, show_progress=False)
+    res["T_out"] = forecast_df["T_out"].to_numpy()
     return res
 
 
@@ -972,6 +1025,17 @@ def _render_result(res: pd.DataFrame, baseline: pd.DataFrame, vpd_low: float, vp
     st.plotly_chart(build_live_figure(res, vpd_low, vpd_high), use_container_width=True)
 
 
+def live_range_hours_available(weather: pd.DataFrame, start_date: date, end_date: date) -> int:
+    """Hours of cached weather within [start_date, end_date] inclusive.
+
+    Shared by the proactive Date range validation (disables Run before a
+    click) and the defensive check inside the Run handler, so both read the
+    same definition of "has data" rather than two copies drifting apart.
+    """
+    start_str, end_str = f"{start_date} 00:00:00", f"{end_date} 23:00:00"
+    return int(((weather.index >= start_str) & (weather.index <= end_str)).sum())
+
+
 def default_live_date_range(regime_key: str, min_date: date, max_date: date, span_days: int = 13) -> tuple[date, date]:
     """A regime-appropriate default date range guaranteed to fall inside the
     cached weather record -- walks backward from the latest cached year to
@@ -1154,8 +1218,45 @@ def render_live_simulation() -> None:
                  "physics for a date range you choose. The Predictive (MPC) controller can "
                  "take 2-4 minutes per 90-day window.",
         )
+        use_forecast = st.toggle(
+            "Use live forecast (next 12 days)", value=False,
+            help="Off (default): every mode above reads the cached 2021-2026 historical record, "
+                 "no network call. On: fetch Open-Meteo's actual current forecast for Guwahati "
+                 "and run the selected controller over it. Requires network access, and falls "
+                 "back to the cached modes above if the fetch fails.",
+        )
 
-        if live_mode:
+        if use_forecast:
+            st.info(
+                "**Forecast mode: live weather, not part of the 5-season validated results.** "
+                "Runs the selected controller against Open-Meteo's actual current 12-day forecast "
+                "for Guwahati, fetched on demand. Separate from the cached 2021-2026 record every "
+                "other mode and every other page in this app uses."
+            )
+            forecast_df, forecast_error = load_forecast_weather()
+            if forecast_error:
+                st.warning(
+                    f"Live forecast unavailable ({forecast_error}). Turn off \"Use live forecast\" "
+                    "to browse the app's regular cached results instead."
+                )
+            elif forecast_df is not None:
+                st.caption(
+                    f"Forecast fetched: {forecast_df.index.min():%Y-%m-%d %H:%M} to "
+                    f"{forecast_df.index.max():%Y-%m-%d %H:%M} ({len(forecast_df)} hours)."
+                )
+            if st.button("Refresh forecast", use_container_width=True):
+                st.session_state.pop("forecast_weather_df", None)
+                st.session_state.pop("forecast_fetch_error", None)
+                st.session_state.pop("forecast_run_result", None)
+                st.rerun()
+            controller_label = st.selectbox("Controller", CONTROLLER_LABELS, index=0, key="forecast_controller")
+            crop_stage = st.selectbox("Crop stage", list(CROP_STAGE_VPD_BAND), index=2, key="forecast_crop_stage")
+            st.caption("Crop stage sets the VPD band used for the metric/shading above: an assumed "
+                       "horticultural mapping, not a physics coupling (Kc still follows FAO-56 calendar days).")
+            run_clicked = st.button(
+                "Run simulation", type="primary", use_container_width=True, disabled=forecast_df is None,
+            )
+        elif live_mode:
             # The slow-Predictive warning is shown immediately when the
             # toggle flips on -- before the date range, controller, or Run
             # button are even reached -- so it's seen before it can be
@@ -1177,11 +1278,33 @@ def render_live_simulation() -> None:
                 min_value=min_date, max_value=max_date,
                 help=f"Clamped to the cached weather record: {min_date} to {max_date}.",
             )
+            # max_date's own year is usually a partial year (the cache stops
+            # at whatever day it was last fetched, not Dec 31) -- a day past
+            # it just reads as a mysteriously disabled calendar cell
+            # otherwise, easy to mistake for a bug (it isn't one: no data
+            # exists yet for those days). Say so explicitly.
+            if max_date < date(max_date.year, 12, 31):
+                st.caption(
+                    f"Note: {max_date.year} is a partial year in the cache (through {max_date}). "
+                    f"For the complete {regime_label} window, pick an earlier year on the calendar above."
+                )
+            start_date, end_date = date_range if isinstance(date_range, tuple) and len(date_range) == 2 else (date_range, date_range)
+            if start_date > end_date:
+                range_valid = False
+                st.warning(f"Start date ({start_date}) is after end date ({end_date}). Pick a valid range.")
+            else:
+                range_valid = live_range_hours_available(weather, start_date, end_date) > 0
+                if not range_valid:
+                    st.warning(
+                        f"Selected range has no cached weather. Available: {min_date} to {max_date}."
+                    )
             controller_label = st.selectbox("Controller", CONTROLLER_LABELS, index=0)
             crop_stage = st.selectbox("Crop stage", list(CROP_STAGE_VPD_BAND), index=2)
             st.caption("Crop stage sets the VPD band used for the metric/shading above: an assumed "
                        "horticultural mapping, not a physics coupling (Kc still follows FAO-56 calendar days).")
-            run_clicked = st.button("Run simulation", type="primary", use_container_width=True)
+            run_clicked = st.button(
+                "Run simulation", type="primary", use_container_width=True, disabled=not range_valid,
+            )
         else:
             regime_label = st.selectbox("Regime", list(REGIME_LABELS.values()), index=0)
             regime_key = REGIME_KEY_FROM_LABEL[regime_label]
@@ -1195,21 +1318,41 @@ def render_live_simulation() -> None:
 
     vpd_low, vpd_high = CROP_STAGE_VPD_BAND[crop_stage]
 
-    if live_mode:
+    if use_forecast:
         if run_clicked:
-            start_date, end_date = date_range if isinstance(date_range, tuple) and len(date_range) == 2 else (date_range, date_range)
-            if start_date > end_date:
-                st.error(f"Start date ({start_date}) is after end date ({end_date}). Pick a valid range.")
-                return
-            start_str, end_str = f"{start_date} 00:00:00", f"{end_date} 23:00:00"
-            weather = load_weather_live()
-            n_hours_available = int(((weather.index >= start_str) & (weather.index <= end_str)).sum())
-            if n_hours_available == 0:
+            forecast_df, forecast_error = load_forecast_weather()
+            if forecast_df is None:
                 st.error(
-                    f"No cached weather data for {start_date} to {end_date}. The cache covers "
-                    f"{weather.index.min().date()} to {weather.index.max().date()}. Pick a range inside that."
+                    f"Live forecast unavailable ({forecast_error}). Turn off \"Use live forecast\" "
+                    "to browse the app's regular cached results instead."
                 )
                 return
+            with st.spinner("Running simulation on the live forecast..."):
+                res = run_window_forecast(CONTROLLER_KEY[controller_label], forecast_df)
+                baseline = run_window_forecast("fixed", forecast_df)
+            st.session_state.forecast_run_result = {
+                "res": res, "baseline": baseline, "controller_label": controller_label,
+            }
+        result = st.session_state.get("forecast_run_result")
+        if result is None:
+            st.info("Click **Run simulation** in the sidebar to run the selected controller on the live forecast.")
+            return
+        _render_result(result["res"], result["baseline"], vpd_low, vpd_high, result["controller_label"] == "Fixed")
+        render_decision_explanation(result["res"], result["controller_label"], vpd_low, vpd_high)
+    elif live_mode:
+        if run_clicked:
+            # Defense in depth only -- the Run button above is disabled
+            # whenever range_valid is False, so this should be unreachable
+            # in normal use, but a stale click shouldn't be able to crash
+            # the page either.
+            if not range_valid:
+                st.error(
+                    f"Selected range has no cached weather. Available: {min_date} to {max_date}."
+                    if start_date <= end_date else
+                    f"Start date ({start_date}) is after end date ({end_date}). Pick a valid range."
+                )
+                return
+            start_str, end_str = f"{start_date} 00:00:00", f"{end_date} 23:00:00"
             with st.spinner("Running simulation..."):
                 res = run_window_live(CONTROLLER_KEY[controller_label], start_str, end_str)
                 baseline = run_window_live("fixed", start_str, end_str)

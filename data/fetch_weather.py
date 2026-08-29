@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sim.config import default_config  # noqa: E402
 
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
 HOURLY_VARS = [
     "temperature_2m",
@@ -127,6 +128,66 @@ def _fetch_from_api(
     df["time"] = pd.to_datetime(df["time"])
     df = df.set_index("time").rename(columns=RENAME_MAP)
     df = df[list(RENAME_MAP.values())]
+    return df
+
+
+# Forecast mode ("opt-in, next N days" -- Live Simulation page only). Kept
+# separate from fetch_weather()/fetch_weather_multi_year() above, which stay
+# archive-only and untouched: this is the one path in the whole project that
+# reads live, not-yet-validated Open-Meteo forecast data, so it is never the
+# default and never mixed into the cached multi-year record those other
+# functions build.
+def fetch_open_meteo_forecast(
+    latitude: float,
+    longitude: float,
+    timezone: str,
+    forecast_days: int = 12,
+    timeout_s: float = 15.0,
+) -> pd.DataFrame:
+    """Fetch the next ``forecast_days`` days of hourly forecast weather.
+
+    Reuses HOURLY_VARS/RENAME_MAP so the returned frame has exactly the same
+    six columns (T_out, RH_out, I_solar, wind, rain, cloud) as the cached
+    archive data -- everything downstream of this call (sim.engine.run, the
+    controllers) sees an identical schema regardless of which source the
+    weather came from.
+
+    Raises RuntimeError on any network failure, timeout, or malformed
+    response -- callers are expected to catch this and fall back to cached
+    mode rather than let it propagate to a crash.
+    """
+    params: dict[str, Any] = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "timezone": timezone,
+        "forecast_days": forecast_days,
+        "hourly": ",".join(HOURLY_VARS),
+        "wind_speed_unit": "ms",
+    }
+    try:
+        resp = requests.get(FORECAST_URL, params=params, timeout=timeout_s)
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(
+            f"Failed to fetch forecast weather from Open-Meteo ({FORECAST_URL}). "
+            f"Underlying error: {exc}"
+        ) from exc
+
+    payload = resp.json()
+    if "hourly" not in payload:
+        raise RuntimeError(f"Open-Meteo forecast response missing 'hourly' block. Full response: {payload}")
+
+    hourly = payload["hourly"]
+    df = pd.DataFrame(hourly)
+    df["time"] = pd.to_datetime(df["time"])
+    df = df.set_index("time").rename(columns=RENAME_MAP)
+    df = df[list(RENAME_MAP.values())]
+    if df.isna().any().any():
+        # Forecast data can have short leading/trailing NaN runs (e.g. a
+        # variable not yet initialized for the last forecast hour); reuse
+        # the same conservative interpolation rule as the archive path
+        # rather than inventing a separate tolerance.
+        df = _interpolate_short_gaps(df)
     return df
 
 
